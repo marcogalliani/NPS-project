@@ -1,0 +1,825 @@
+---
+title: "Comparative inference"
+---
+
+## General utils
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+```{r warning=FALSE}
+library(compositions)
+library(DepthProc)
+
+library(ggtern)
+library(RColorBrewer)
+library(lattice)
+library(wesanderson)
+```
+
+
+Loading the data
+```{r}
+set.seed(050700)
+
+root = "../.."
+source(paste(root,"include/utils.R",sep = "/"))
+
+library(readr)
+clean_data <- read_csv(paste(root, "data/clean_merged_data.csv", sep="/"))
+```
+### Inference functions
+```{r}
+# set of functions to perform non-parametric tests
+source("inference_module.R")
+
+B <- 1e4
+alpha <- 0.05
+```
+
+Here we want to inspect if there are differences between the distribution of some variables in "republican" and "democratic" counties
+```{r}
+gop_counties <- which(clean_data$gop_pct20 > clean_data$dem_pct20)
+dem_counties <- which(clean_data$gop_pct20 < clean_data$dem_pct20)
+```
+
+We're gonna consider the following test statistics
+```{r}
+mult_mean_diff <- function(df1, df2){
+  m1 <- apply(df1,2, mean)
+  m2 <- apply(df2,2, mean)
+  
+  cov1 <- stats::cov(df1)
+  cov2 <- stats::cov(df2)
+  
+  n1 <- nrow(df1)
+  n2 <- nrow(df2)
+  
+  return(as.numeric(t(m1-m2) %*% solve(1/n1*cov1 + 1/n2*cov1) %*% (m1-m2)))
+}
+
+mult_median_diff <- function(df1, df2){
+  library(DepthProc)
+  
+  m1 <- DepthProc::depthMedian(df1)
+  m2 <- DepthProc::depthMedian(df2)
+  
+  return(max(abs(m1 - m2)))
+}
+```
+
+
+## Ethnical composition
+Mapping the composition to an euclidean space
+```{r}
+race.composit <- acomp(clean_data, 
+                   parts = c("white_pct", "black_pct", "hispanic_pct"))
+
+mapped_race.composit <- ilr(race.composit)
+```
+
+### DD-plot
+```{r}
+ddPlot(x = as.data.frame(scale(mapped_race.composit[dem_counties,])), 
+       y = as.data.frame(scale(mapped_race.composit[gop_counties,])),
+       depth_params = list(method='Tukey'))
+```
+
+
+### Bootstrap estimation
+Estimation
+```{r}
+# permutational parameters
+alpha <- 0.05
+k <- 2
+
+B <- 1e4
+seed <- 050700
+
+n_cores <- 8
+cl <- makeCluster(n_cores)
+
+# computation of the medians by county majority
+dem_race.med.estimation <- boot.estimation(mapped_race.composit[dem_counties,],
+                                              DepthProc::depthMedian, 
+                                              alpha/k, 
+                                              B, seed, cl)
+dem_race.median <- ilrInv(dem_race.med.estimation$obs.T_stat)
+names(dem_race.median) <- names(race.composit)
+
+gop_race.med.estimation <- boot.estimation(mapped_race.composit[gop_counties,],
+                                              DepthProc::depthMedian, 
+                                              alpha/k, 
+                                              B, seed, cl)
+gop_race.median <- ilrInv(gop_race.med.estimation$obs.T_stat)
+names(gop_race.median) <- names(race.composit)
+```
+
+Plotting
+```{r}
+# little utility function to plot results from the bootstrap estimation
+estimation_report <- function(dem_median_estimation, gop_median_estimation, 
+                              mapped.composit,
+                              groups_names){
+  dem_median <- ilrInv(dem_median_estimation$obs.T_stat)
+  names(dem_median) <- groups_names
+  
+  gop_median <- ilrInv(gop_median_estimation$obs.T_stat)
+  names(gop_median) <- groups_names
+  
+  #barplot comparing the medians
+  barplot(cbind(dem_median, gop_median), legend.text = T, 
+          col = wes_palette(n = length(groups_names), name = "GrandBudapest2"))
+  
+  #pair plot in the space of the compositions
+  splom(as.matrix(mapped.composit), 
+      groups=ifelse(clean_data$dem_pct20 > clean_data$gop_pct20, 1, 0), 
+      pch=21,
+      panel=function(x, y, i, j, groups, ...) {
+                panel.points(
+                  x, y, pch=20, cex = 0.2,
+                  col=ifelse(clean_data$dem_pct20 > clean_data$gop_pct20,
+                             "cornflowerblue", "coral"))
+                panel.points(dem_median_estimation$obs.T_stat[j],
+                             dem_median_estimation$obs.T_stat[i],
+                             pch=".",col='darkblue',cex=1)
+                panel.points(gop_median_estimation$obs.T_stat[j], 
+                             gop_median_estimation$obs.T_stat[i],
+                             pch=".",col='firebrick',cex=1)
+                panel.rect(xleft = dem_median_estimation$CI.RP[1,j],
+                           xright = dem_median_estimation$CI.RP[2,j],
+                           ybottom = dem_median_estimation$CI.RP[1,i],
+                           ytop = dem_median_estimation$CI.RP[2,i],
+                           col = "darkblue")
+                panel.rect(xleft = gop_median_estimation$CI.RP[1,j],
+                           xright = gop_median_estimation$CI.RP[2,j],
+                           ybottom = gop_median_estimation$CI.RP[1,i],
+                           ytop = gop_median_estimation$CI.RP[2,i],
+                           col = "firebrick")
+            })
+}
+```
+
+```{r}
+estimation_report(dem_race.med.estimation, gop_race.med.estimation,
+                  mapped_race.composit,
+                  names(race.composit))
+```
+
+### t-test
+Permutational test
+```{r}
+perm_test_race <- perm_t.test(
+  mapped_race.composit[dem_counties,], mapped_race.composit[gop_counties,],
+  mult_median_diff,
+  B, seed, cl
+)
+
+plot.perm_results(perm_test_race)
+```
+
+## Age composition
+```{r}
+age.composit <- acomp(clean_data, 
+                  parts = c("age29andunder_pct", "age30to64", "age65andolder_pct")
+                  )
+mapped_age.composit <- ilr(age.composit)
+```
+
+### DD-plot
+```{r}
+ddPlot(x = as.data.frame(scale(mapped_age.composit[dem_counties,])), 
+       y = as.data.frame(scale(mapped_age.composit[gop_counties,])),
+       depth_params = list(method='Tukey'))
+```
+
+
+### Bootstrap estimation
+```{r}
+# permutational parameters
+alpha <- 0.01
+k <- 2
+
+B <- 1e4
+seed <- 050700
+
+n_cores <- 8
+cl <- makeCluster(n_cores)
+
+# computation of the medians by county majority
+dem_age.med.estimation <- boot.estimation(mapped_age.composit[dem_counties,],
+                                              DepthProc::depthMedian, 
+                                              alpha/k, 
+                                              B, seed, cl)
+dem_age.median <- ilrInv(dem_age.med.estimation$obs.T_stat)
+names(dem_age.median) <- names(age.composit)
+
+gop_age.med.estimation <- boot.estimation(mapped_age.composit[gop_counties,],
+                                              DepthProc::depthMedian, 
+                                              alpha/k, 
+                                              B, seed, cl)
+gop_age.median <- ilrInv(gop_age.med.estimation$obs.T_stat)
+names(gop_age.median) <- names(age.composit)
+```
+
+Plotting
+```{r}
+estimation_report(dem_age.med.estimation, gop_age.med.estimation,
+                  mapped_age.composit,
+                  names(age.composit))
+```
+
+Tern plots
+```{r}
+library(ggtern)
+
+# rectangle confidence intervals in the mapped space of compositions
+dem.rect_vert <- with(dem_age.med.estimation,
+                  data.frame(A = c(CI.RP[1,1],CI.RP[1,2]),
+                             B = c(CI.RP[1,1],CI.RP[2,2]),
+                             C = c(CI.RP[2,1],CI.RP[2,2]),
+                             D = c(CI.RP[2,1],CI.RP[1,2])
+                  )
+)
+
+gop.rect_vert <- with(gop_age.med.estimation,
+                  data.frame(A = c(CI.RP[1,1],CI.RP[1,2]),
+                             B = c(CI.RP[1,1],CI.RP[2,2]),
+                             C = c(CI.RP[2,1],CI.RP[2,2]),
+                             D = c(CI.RP[2,1],CI.RP[1,2])
+                  )
+)
+
+# visualization
+ggtern() +
+  geom_point(aes(x=age29andunder_pct, y=age30to64, z=age65andolder_pct),
+             data = age.composit,
+             color = ifelse(clean_data$dem_pct20 > clean_data$gop_pct20,
+                             "cornflowerblue", "coral")) +
+  geom_polygon(aes(x=age29andunder_pct, y=age30to64, z=age65andolder_pct),
+               data = ilrInv(t(dem.rect_vert), orig = age.composit),
+               color = 'darkblue') +
+  geom_polygon(aes(x=age29andunder_pct, y=age30to64, z=age65andolder_pct),
+               data = ilrInv(t(gop.rect_vert), orig = age.composit),
+               color = 'darkred') +
+  theme_bw()
+```
+```{r}
+plot(age.composit, 
+     col = ifelse(clean_data$dem_pct20 > clean_data$gop_pct20,
+                             "cornflowerblue", "coral"),
+     pch=20, cex = 0.1,
+     axes=T, labels= c("under30","30to64","over64"))
+
+with(gop.rect_vert,
+     list(
+       segments.acomp(ilrInv(A),ilrInv(B), col="darkred"),
+       segments.acomp(ilrInv(B),ilrInv(C), col="darkred"),
+       segments.acomp(ilrInv(C),ilrInv(D), col="darkred"),
+       segments.acomp(ilrInv(D),ilrInv(A), col="darkred")
+     )
+)
+
+with(dem.rect_vert,
+     list(
+       segments.acomp(ilrInv(A),ilrInv(B), col="darkblue"),
+       segments.acomp(ilrInv(B),ilrInv(C), col="darkblue"),
+       segments.acomp(ilrInv(C),ilrInv(D), col="darkblue"),
+       segments.acomp(ilrInv(D),ilrInv(A), col="darkblue")
+     )
+)
+
+plot(ilrInv(gop_age.med.estimation$obs.T_stat), col = "red", add=T, pch=8, cex = 0.5)
+plot(ilrInv(dem_age.med.estimation$obs.T_stat), col = "blue", add=T, pch=8, cex = 0.5)
+
+```
+
+
+### t-test
+Permutational test
+```{r}
+perm_test_age <- perm_t.test(
+  mapped_age.composit[dem_counties,], mapped_age.composit[gop_counties,],
+  mult_median_diff,
+  B, seed, cl
+)
+
+plot.perm_results(perm_test_age)
+```
+
+## Gender composition
+```{r}
+gender.composit <- acomp(clean_data, 
+                     parts = c("male_pct", "female_pct"))
+mapped_gender.composit <- ilr(gender.composit)
+```
+
+### QQ-plot
+We're in the univariate case, thus just a qqplot is needed
+```{r}
+qqplot(x = scale(mapped_gender.composit[dem_counties,1]), 
+       y = scale(mapped_gender.composit[gop_counties,1]),
+       xlim = c(-10,10), ylim = c(-10,10)
+       )
+abline(a = 0, b = 1, col = "red")
+```
+
+### Bootstrap estimation
+```{r}
+#bootstrap parameters
+alpha <- 0.05
+k <- 1
+
+B <- 1e4
+seed <- 050700
+
+n_cores <- 8
+cl <- makeCluster(n_cores)
+
+med.t_stat <- function(x){
+  median(as.numeric(x))
+}
+
+# computation of the medians by county majority
+dem_gender.med.estimation <- boot.uni.estimation(mapped_gender.composit[dem_counties,],
+                                              med.t_stat, 
+                                              alpha/k, 
+                                              B, seed, cl)
+dem_gender.median <- ilrInv(dem_gender.med.estimation$obs.T_stat)
+names(dem_gender.median) <- names(gender.composit)
+
+gop_gender.med.estimation <- boot.uni.estimation(mapped_gender.composit[gop_counties,],
+                                              med.t_stat, 
+                                              alpha/k, 
+                                              B, seed, cl)
+gop_gender.median <- ilrInv(gop_gender.med.estimation$obs.T_stat)
+names(gop_gender.median) <- names(gender.composit)
+```
+
+Plotting
+```{r}
+#barplot comparing the medians
+barplot(cbind(dem_gender.median, gop_gender.median), legend.text = T, 
+          col = wes_palette(n = length(names(gender.composit)), name = "GrandBudapest2"))
+
+dem_gender.med.estimation$CI.RP
+gop_gender.med.estimation$CI.RP
+```
+### t-test
+Permutational test
+```{r}
+perm_test_gender <- perm_t.uni.test(
+  mapped_gender.composit[dem_counties,1], mapped_gender.composit[gop_counties,1],
+  function(data1,data2){abs(median(data1)-median(data2))},
+  B, seed, cl)
+
+plot.perm_results(perm_test_gender)
+```
+
+## Educational composition
+Mapping the composition to an euclidean space
+```{r}
+edu.composit <- acomp(clean_data, 
+                   parts = c("lesshs_pct", "onlyhs_pct", "morecollege_pct"))
+mapped_edu.composit <- ilr(edu.composit)
+```
+
+### DD-plot
+```{r}
+ddPlot(x = as.data.frame(scale(mapped_edu.composit[dem_counties,])), 
+       y = as.data.frame(scale(mapped_edu.composit[gop_counties,])),
+       depth_params = list(method='Tukey'))
+```
+
+### Bootstrap estimation
+```{r}
+# permutational parameters
+alpha <- 0.05
+k <- 3
+
+B <- 1e4
+seed <- 050700
+
+n_cores <- 8
+cl <- makeCluster(n_cores)
+
+# computation of the medians by county majority
+dem_edu.med.estimation <- boot.estimation(mapped_edu.composit[dem_counties,],
+                                              DepthProc::depthMedian, 
+                                              alpha/k, 
+                                              B, seed, cl)
+dem_edu.median <- ilrInv(dem_edu.med.estimation$obs.T_stat)
+names(dem_edu.median) <- names(edu.composit)
+
+gop_edu.med.estimation <- boot.estimation(mapped_edu.composit[gop_counties,],
+                                              DepthProc::depthMedian, 
+                                              alpha/k, 
+                                              B, seed, cl)
+gop_edu.median <- ilrInv(gop_edu.med.estimation$obs.T_stat)
+names(gop_edu.median) <- names(edu.composit)
+```
+
+Plotting
+```{r}
+estimation_report(dem_edu.med.estimation, gop_edu.med.estimation,
+                  mapped_edu.composit, 
+                  names(edu.composit))
+```
+
+### t-tests
+Permutational test
+```{r}
+perm_test_edu <- perm_t.test(
+  mapped_edu.composit[dem_counties,], mapped_edu.composit[gop_counties,],
+  mult_median_diff,
+  B, seed, cl
+)
+
+plot.perm_results(perm_test_edu)
+```
+
+## Whites edu composition
+Mapping the composition to an euclidean space
+```{r}
+comp_eduW <- acomp(clean_data, 
+                   parts = c("lesshs_pct", "onlyhs_pct", "morecollege_pct"))
+mapped_eduW_composit <- ilr(comp_edu)
+```
+
+### Bootstrap estimation
+```{r}
+alpha <- 0.05
+k <- 2 #correction
+
+depth_median <- function(x){
+  return(DepthProc::depthMedian(x))
+}
+
+# computation of the medians by county majority
+dem_eduW_median_estimation <- boot_estimation(mapped_eduW_composit[dem_counties,],
+                                         depth_median, 
+                                         alpha/k, B)
+dem_eduW_median <- ilrInv(dem_eduW_median_estimation$estimated_t)
+names(dem_eduW_median) <- names(comp_eduW)
+
+gop_eduW_median_estimation <- boot_estimation(mapped_eduW_composit[gop_counties,],
+                                         depth_median, 
+                                         alpha/k, B)
+gop_eduW_median <- ilrInv(gop_eduW_median_estimation$estimated_t)
+names(gop_eduW_median) <- names(comp_eduW)
+```
+
+Plotting
+```{r}
+# comparison of the medians
+barplot(cbind(dem_eduW_median, gop_eduW_median), legend.text = T, col = c("red", "blue", "green"))
+```
+
+```{r}
+library(lattice)
+
+splom(as.matrix(mapped_eduW_composit), 
+      groups=ifelse(clean_data$gop_pct20 < clean_data$dem_pct20, 1, 0), pch=21,
+      panel=function(x, y, i, j, groups, ...) {
+                panel.points(x, y, pch=20, cex = 0.2,
+                             col=ifelse(clean_data$gop_pct20 < 
+                                          clean_data$dem_pct20, "cornflowerblue", "coral"))
+                panel.points(dem_eduW_median_estimation$estimated_t[j],
+                             dem_eduW_median_estimation$estimated_t[i],
+                             pch=10,col='darkblue')
+                panel.points(gop_edu_median_estimation$estimated_t[j], 
+                             gop_edu_median_estimation$estimated_t[i],
+                             pch=10,col='firebrick')
+                panel.rect(xleft = dem_edu_median_estimation$CI.RP[1,j],
+                           xright = dem_edu_median_estimation$CI.RP[2,j],
+                           ybottom = dem_edu_median_estimation$CI.RP[1,i],
+                           ytop = dem_edu_median_estimation$CI.RP[2,i],
+                           col = "darkblue")
+                panel.rect(xleft = gop_edu_median_estimation$CI.RP[1,j],
+                           xright = gop_edu_median_estimation$CI.RP[2,j],
+                           ybottom = gop_edu_median_estimation$CI.RP[1,i],
+                           ytop = gop_edu_median_estimation$CI.RP[2,i],
+                           col = "firebrick")
+            })
+```
+
+### Tests
+Permutational test
+```{r}
+perm_test_edu <- perm_T_test(
+  as.data.frame(mapped_edu_composit), 
+  gop_counties, dem_counties, 
+  mult_median_diff,
+  B)
+```
+
+```{r}
+# PLOTS
+#-> histograms of the permutational distribution
+hist(perm_test_edu$perm_distr_T, 
+     xlim=range(c(perm_test_edu$perm_distr_T, perm_test_edu$T0)))
+abline(v=perm_test_edu$T0, col=3,lwd=4)
+#-> distribution function of the permutational distribution
+plot(ecdf(perm_test_edu$perm_distr_T), 
+     xlim=range(c(perm_test_edu$perm_distr_T, perm_test_edu$T0)))
+abline(v=perm_test_edu$T0, col=3,lwd=4)
+  
+# P-VALUE
+p_val <- sum(perm_test_edu$perm_distr_T >= perm_test_edu$T0)/B
+cat("p-value", p_val, "\n")
+```
+
+Bootstrapping test
+```{r}
+boot_test_edu <- boot_T_test(
+  as.data.frame(mapped_edu_composit), 
+  gop_counties, dem_counties, 
+  mult_mean_diff,
+  alpha, 10)
+```
+
+
+```{r}
+# PLOTS
+#-> histograms of the bootstrap distribution
+hist(boot_test_edu$boot_distr_T, 
+     xlim=range(c(boot_test_edu$boot_distr_T, boot_test_edu$T0)))
+abline(v=boot_test_edu$T0, col=3,lwd=4)
+
+#-> distribution function of the bootstrap distribution
+plot(ecdf(boot_test_edu$boot_distr_T), 
+     main='empirical bootstrap distr. of the t-test statistic')
+abline(v=boot_test_edu$T0, lty=2)
+abline(v = boot_test_edu$CI.RP, col='red')
+abline(v = boot_test_edu$CI.P, col="blue")
+```
+
+## Wealth
+### Bootstrap estimation
+```{r}
+alpha <- 0.05
+k <- 2 #correction
+
+depth_median <- function(x){
+  return(DepthProc::depthMedian(x))
+}
+
+# computation of the medians by county majority
+dem_income_median_estimation <- uni_boot_estimation(clean_data$median_hh_inc[dem_counties],
+                                         median, 
+                                         alpha/k, B)
+gop_eduW_median_estimation <- uni_boot_estimation(clean_data$median_hh_inc[gop_counties],
+                                         median, 
+                                         alpha/k, B)
+```
+
+
+## For the report
+- Ethnical composition
+```{r}
+race.composit <- acomp(clean_data, 
+                   parts = c("white_pct", "black_pct", "hispanic_pct"))
+
+mapped_race.composit <- ilr(race.composit)
+
+race.dem_median <- ilrInv(dem_race.med.estimation$obs.T_stat, orig = race.composit)
+race.gop_median <- ilrInv(gop_race.med.estimation$obs.T_stat, orig = race.composit)
+
+## DD plots
+png(filename = "plots/ethn_ddplot.png",
+     width = 800, height = 800, units = "px")
+
+ddPlot(x = as.data.frame(scale(mapped_race.composit[dem_counties,])), 
+       y = as.data.frame(scale(mapped_race.composit[gop_counties,])),
+       depth_params = list(method='Tukey'))
+
+dev.off()
+
+## Depth medians
+png(filename = "plots/ethn_medians.png",
+     width = 800, height = 800, units = "px")
+
+barplot(cbind(race.dem_median, race.gop_median), 
+          col = wes_palette(n = dim(race.composit)[2], name = "GrandBudapest2"),
+        legend.text = c("white", "black", "hispanic"))
+
+dev.off()
+
+
+## Bootstrap confidence intervals
+dem.rect_vert <- with(dem_race.med.estimation,
+                  data.frame(A = c(CI.RP[1,1],CI.RP[1,2]),
+                             B = c(CI.RP[1,1],CI.RP[2,2]),
+                             C = c(CI.RP[2,1],CI.RP[2,2]),
+                             D = c(CI.RP[2,1],CI.RP[1,2])
+                  )
+)
+
+gop.rect_vert <- with(gop_race.med.estimation,
+                  data.frame(A = c(CI.RP[1,1],CI.RP[1,2]),
+                             B = c(CI.RP[1,1],CI.RP[2,2]),
+                             C = c(CI.RP[2,1],CI.RP[2,2]),
+                             D = c(CI.RP[2,1],CI.RP[1,2])
+                  )
+)
+
+png(filename = "plots/race_boot_estimation.png",
+     width = 800, height = 800, units = "px")
+
+plot(race.composit, 
+     col = ifelse(clean_data$dem_pct20 > clean_data$gop_pct20,
+                             "cornflowerblue", "coral"),
+     pch=20, cex = 0.1,
+     plotMissings=F,
+     axes=T, labels= c("white","black","hispanic"))
+
+with(gop.rect_vert,
+     list(
+       segments.acomp(ilrInv(A),ilrInv(B), col="darkred"),
+       segments.acomp(ilrInv(B),ilrInv(C), col="darkred"),
+       segments.acomp(ilrInv(C),ilrInv(D), col="darkred"),
+       segments.acomp(ilrInv(D),ilrInv(A), col="darkred")
+     )
+)
+
+with(dem.rect_vert,
+     list(
+       segments.acomp(ilrInv(A),ilrInv(B), col="darkblue"),
+       segments.acomp(ilrInv(B),ilrInv(C), col="darkblue"),
+       segments.acomp(ilrInv(C),ilrInv(D), col="darkblue"),
+       segments.acomp(ilrInv(D),ilrInv(A), col="darkblue")
+     )
+)
+
+plot(ilrInv(gop_race.med.estimation$obs.T_stat), col = "red", add=T, pch=8, cex = 0.5)
+plot(ilrInv(dem_race.med.estimation$obs.T_stat), col = "blue", add=T, pch=8, cex = 0.5)
+
+dev.off()
+```
+
+```{r}
+plot(age.composit, type="n")
+points(race.composit, col="blue")   
+```
+
+
+- Educational composition
+```{r}
+edu.composit <- acomp(clean_data, 
+                   parts = c("lesshs_pct", "onlyhs_pct", "morecollege_pct"))
+mapped_edu.composit <- ilr(edu.composit)
+
+edu.dem_median <- ilrInv(dem_edu.med.estimation$obs.T_stat, orig = edu.composit)
+edu.gop_median <- ilrInv(gop_edu.med.estimation$obs.T_stat, orig = edu.composit)
+
+## DD-plots
+png(filename = "plots/edu_ddplot.png",
+     width = 800, height = 800, units = "px")
+
+ddPlot(x = as.data.frame(scale(mapped_edu.composit[dem_counties,])), 
+       y = as.data.frame(scale(mapped_edu.composit[gop_counties,])),
+       depth_params = list(method='Tukey'))
+
+dev.off()
+
+## Depth medians
+png(filename = "plots/edu_medians.png",
+     width = 800, height = 800, units = "px")
+
+barplot(cbind(edu.dem_median, edu.gop_median), 
+        col = wes_palette(n = dim(edu.composit)[2], name = "GrandBudapest2"),
+        legend.text = c("less_hs","only_hs","more_hs"))
+
+dev.off()
+
+## Bootstrap confidence intervals 
+dem.rect_vert <- with(dem_edu.med.estimation,
+                  data.frame(A = c(CI.RP[1,1],CI.RP[1,2]),
+                             B = c(CI.RP[1,1],CI.RP[2,2]),
+                             C = c(CI.RP[2,1],CI.RP[2,2]),
+                             D = c(CI.RP[2,1],CI.RP[1,2])
+                  )
+)
+
+gop.rect_vert <- with(gop_edu.med.estimation,
+                  data.frame(A = c(CI.RP[1,1],CI.RP[1,2]),
+                             B = c(CI.RP[1,1],CI.RP[2,2]),
+                             C = c(CI.RP[2,1],CI.RP[2,2]),
+                             D = c(CI.RP[2,1],CI.RP[1,2])
+                  )
+)
+
+png(filename = "plots/edu_boot_estimation.png",
+     width = 800, height = 800, units = "px")
+
+plot(edu.composit, 
+     col = ifelse(clean_data$dem_pct20 > clean_data$gop_pct20,
+                             "cornflowerblue", "coral"),
+     pch=20, cex = 0.1,
+     axes=T, labels= c("less_hs","only_hs","more_hs"))
+
+with(gop.rect_vert,
+     list(
+       segments.acomp(ilrInv(A),ilrInv(B), col="darkred"),
+       segments.acomp(ilrInv(B),ilrInv(C), col="darkred"),
+       segments.acomp(ilrInv(C),ilrInv(D), col="darkred"),
+       segments.acomp(ilrInv(D),ilrInv(A), col="darkred")
+     )
+)
+
+with(dem.rect_vert,
+     list(
+       segments.acomp(ilrInv(A),ilrInv(B), col="darkblue"),
+       segments.acomp(ilrInv(B),ilrInv(C), col="darkblue"),
+       segments.acomp(ilrInv(C),ilrInv(D), col="darkblue"),
+       segments.acomp(ilrInv(D),ilrInv(A), col="darkblue")
+     )
+)
+
+plot(ilrInv(gop_edu.med.estimation$obs.T_stat), col = "red", add=T, pch=8, cex = 0.5)
+plot(ilrInv(dem_edu.med.estimation$obs.T_stat), col = "blue", add=T, pch=8, cex = 0.5)
+
+dev.off()
+```
+
+- Age compositions
+```{r}
+age.composit <- acomp(clean_data, 
+                  parts = c("age29andunder_pct", "age30to64", "age65andolder_pct")
+                  )
+mapped_age.composit <- ilr(age.composit)
+
+age.dem_median <- ilrInv(dem_age.med.estimation$obs.T_stat, orig = age.composit)
+age.gop_median <- ilrInv(gop_age.med.estimation$obs.T_stat, orig = age.composit)
+
+## DD-plots
+png(filename = "plots/age_ddplot.png",
+     width = 800, height = 800, units = "px")
+
+ddPlot(x = as.data.frame(scale(mapped_age.composit[dem_counties,])), 
+       y = as.data.frame(scale(mapped_age.composit[gop_counties,])),
+       depth_params = list(method='Tukey'))
+
+dev.off()
+
+## Depth medians
+png(filename = "plots/age_medians.png",
+     width = 800, height = 800, units = "px")
+
+barplot(cbind(age.dem_median, age.gop_median), 
+          col = wes_palette(n = dim(age.composit)[2], name = "GrandBudapest2"),
+        legend.text = c("under30", "30to64", "over64"))
+
+dev.off()
+
+## Bootstrap confidence intervals
+dem.rect_vert <- with(dem_age.med.estimation,
+                  data.frame(A = c(CI.RP[1,1],CI.RP[1,2]),
+                             B = c(CI.RP[1,1],CI.RP[2,2]),
+                             C = c(CI.RP[2,1],CI.RP[2,2]),
+                             D = c(CI.RP[2,1],CI.RP[1,2])
+                  )
+)
+
+gop.rect_vert <- with(gop_age.med.estimation,
+                  data.frame(A = c(CI.RP[1,1],CI.RP[1,2]),
+                             B = c(CI.RP[1,1],CI.RP[2,2]),
+                             C = c(CI.RP[2,1],CI.RP[2,2]),
+                             D = c(CI.RP[2,1],CI.RP[1,2])
+                  )
+)
+
+png(filename = "plots/age_boot_estimation.png",
+     width = 800, height = 800, units = "px")
+
+plot(age.composit, 
+     col = ifelse(clean_data$dem_pct20 > clean_data$gop_pct20,
+                             "cornflowerblue", "coral"),
+     pch=20, cex = 0.1,
+     axes=T, labels= c("under30","30to64","over64"))
+
+with(gop.rect_vert,
+     list(
+       segments.acomp(ilrInv(A),ilrInv(B), col="darkred"),
+       segments.acomp(ilrInv(B),ilrInv(C), col="darkred"),
+       segments.acomp(ilrInv(C),ilrInv(D), col="darkred"),
+       segments.acomp(ilrInv(D),ilrInv(A), col="darkred")
+     )
+)
+
+with(dem.rect_vert,
+     list(
+       segments.acomp(ilrInv(A),ilrInv(B), col="darkblue"),
+       segments.acomp(ilrInv(B),ilrInv(C), col="darkblue"),
+       segments.acomp(ilrInv(C),ilrInv(D), col="darkblue"),
+       segments.acomp(ilrInv(D),ilrInv(A), col="darkblue")
+     )
+)
+
+plot(ilrInv(gop_age.med.estimation$obs.T_stat), col = "red", add=T, pch=8, cex = 0.5)
+plot(ilrInv(dem_age.med.estimation$obs.T_stat), col = "blue", add=T, pch=8, cex = 0.5)
+
+dev.off()
+```
+

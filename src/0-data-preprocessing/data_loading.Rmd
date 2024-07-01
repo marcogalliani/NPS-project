@@ -1,0 +1,96 @@
+---
+title: "Loading the data"
+---
+
+## Loading the data
+
+Context data
+```{r}
+root = "../.."
+
+library(readr)
+context_data <- read_csv(paste(root, "data/election-context-2018.csv", sep="/"))
+election_data <- read_csv(paste(root, "data/election-results-2020.csv", sep="/"))
+
+library(USpopcenters)
+data("county2020")
+counties_geodata <- county2020
+rm(county2020)
+```
+
+## Merging the datasets
+Firstly let's merge the two main dataset then, let's move on the counties
+
+### States
+We have no context information about Alaska, let's remove it
+```{r}
+context_states <- unique(context_data$state)
+election_states <- unique(election_data$state_name)
+
+# removing state not in both 
+diff_state <- setdiff(election_states, context_states)
+election_data <- election_data[election_data$state_name != diff_state, ]
+```
+
+### Fips codes
+Fixing the FIPS codes in the election data
+```{r}
+context_data$fips <- lapply(context_data$fips, function(x) sprintf("%05d", x))
+context_data$fips <- as.character(context_data$fips)
+
+diff_cont_el <- setdiff(context_data$fips, election_data$county_fips)
+diff_el_cont <- setdiff(election_data$county_fips, context_data$fips)
+```
+
+We got to inspect these codes
+```{r}
+context_data[context_data$fips %in% diff_cont_el, ]
+election_data[election_data$county_fips %in% diff_el_cont, ]
+```
+
+Fixes
+```{r}
+context_data[context_data$fips == "46113", ]$fips = "46102"
+context_data <- subset(context_data, !(fips %in% c("36000", "51515")))
+```
+
+Finally merging and cleaning useless columns
+```{r}
+elect_context_data <- merge(election_data, context_data, by.x = "county_fips", by.y = "fips")
+
+cols_toremove <- c("state","county")
+for(col in cols_toremove){
+  elect_context_data[[col]] <- NULL
+}
+```
+
+### Adding the centroids
+Let's process the data in county2020
+```{r}
+#building the fips code as in the other datasets
+counties_geodata$fips <- paste(counties_geodata$STATEFP, counties_geodata$COUNTYFP, sep = "")
+
+#removing Alaska
+counties_geodata <- counties_geodata[counties_geodata$STNAME != "Alaska", ]
+counties_geodata <- counties_geodata[counties_geodata$STNAME != "Puerto Rico", ]
+
+#removing Kansas City county
+counties_geodata <- subset(counties_geodata, !(fips %in% c("15005")))
+```
+
+Merging the data
+```{r}
+elect_context_geodata <- merge(elect_context_data, counties_geodata, by.x = "county_fips", by.y = "fips")
+
+cols_toremove <- c("STATEFP","COUNTYFP", "COUNAME", "STNAME")
+for(col in cols_toremove){
+  elect_context_geodata[[col]] <- NULL
+}
+```
+
+
+## Saving the data 
+```{r}
+write.csv(elect_context_geodata, file = paste(root, "data/raw_merged_data.csv", sep = "/"))
+```
+

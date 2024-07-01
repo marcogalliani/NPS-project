@@ -1,0 +1,160 @@
+---
+title: "Bootstrap Inference"
+---
+
+## Bootstrap estimation
+```{r}
+g <- nlevels(chickwts$feed)
+n <- dim(chickwts)[1]
+
+with(chickwts, 
+     plot(feed, weight, xlab='treat',col=rainbow(g),main='Original Data')
+)
+```
+
+```{r}
+fit.H1 <- lm(weight ~ feed, data = chickwts)
+summary(fit.H1)
+```
+
+```{r}
+summary(fit.H1)$fstatistic[1]  # extract the test statistic
+```
+
+```{r}
+fit.H0 <- lm(weight ~ 1, data = chickwts)
+```
+
+```{r}
+source("inference_module.R")
+
+test_stat <- function(fit.H0, fit.H1){
+  summary(fit.H1)$fstatistic[1]
+}
+
+B <- 1e4
+seed <- 050700
+
+n_cores <- 4
+cl <- makeCluster(n_cores)
+
+test <- boot.anova(fit.H0,fit.H1,
+           data = chickwts,
+           test_stat = test_stat,
+           alpha = 0.05,
+           B = B,
+           seed = seed,
+           cl = cl
+           )
+```
+
+Results
+```{r}
+hist(test$boot_distr.T_stat,
+     xlim=range(c(test$boot_distr.T_stat,test$obs.T_stat)),
+
+     main="Bootstrap distribution of T0 under H_0")
+
+abline(v=test$obs.T_stat,col=3,lwd=2)
+abline(v=summary(fit.H0)$fstatistic[1],col=3,lwd=2)
+```
+
+Here we get an intersting problem: the observed value of the test statistic is so extreme that it is outside the support of the computed bootstrap distribution. For this reason the reverse percentile confidence interval does not work
+
+```{r}
+source("inference_module.R")
+
+# Under H0 the F-statistic is 0
+
+boot.test.adapter(test$boot_distr.T_stat, test$obs.T_stat,30)
+```
+
+
+## Bootstrap tests
+A little confusion: How to get p-values from the bootstrapping procedures? In the lab sessions two ways were shown
+
+- reverse the computed confidence intervals over a grid
+- compute the bootstrap distribution of the test statistic
+
+Are the computed p-values consistent?
+
+```{r}
+set.seed(seed)
+x1=stabledist::rstable(1000,1.8,0)
+
+# Plot data
+hist(x1)
+boxplot(x1, main = 'X1')
+```
+### Reverse CI
+
+Test:
+$$
+H_0:median(X_1)=0\;vs\;H_1:median(X_1)\neq0
+$$
+
+```{r}
+T.obs <- median(x1)
+T.obs
+```
+
+Let's compute the bootstrap distribution of the median
+```{r}
+cl=makeCluster(parallel::detectCores()/2)
+clusterExport(cl=cl,list('x1'))
+
+T.boot <- pbreplicate(B,  
+                   median(sample(x1, replace = T)),
+                   cl=cl)
+
+plot(ecdf(T.boot), main='Sample median')
+abline(v = T.obs, lty=2)
+```
+
+```{r}
+alpha_grid=seq(0.001,0.5,by=0.001)
+length(alpha_grid)
+
+CI_calc <- function(alpha_level){
+  right.quantile <- quantile(T.boot, 1 - alpha_level/2)
+  left.quantile  <- quantile(T.boot, alpha_level/2)
+  out=c(T.obs - (right.quantile - T.obs), T.obs - (left.quantile - T.obs))
+  names(out)=c('lwr','upr')
+  return(out)
+}
+
+CI_list <- pblapply(alpha_grid, CI_calc)
+CI_mat <- dplyr::bind_rows(CI_list)
+
+# check if 0 is contained in the CI
+check <- CI_mat[,1]>0 | CI_mat[,2]<0
+(alpha_grid[check])[1]
+```
+
+### Bootstrap distribution of the test statistic
+```{r}
+test_stat <- function(uni_data, mu0){
+  abs(median(uni_data) - mu0)
+}
+
+T.obs <- test_stat(x1,0)
+T.obs
+```
+
+```{r}
+mu0 <- 0
+
+cl=makeCluster(parallel::detectCores()/2)
+clusterExport(cl=cl,list('x1','mu0','test_stat'))
+
+T.boot <- pbreplicate(B,  
+                      test_stat(sample(x1,replace=T),mu0),
+                      cl=cl)
+
+plot(ecdf(T.boot), main='Sample median')
+abline(v = T.obs, lty=2)
+
+p_val <- sum(T.boot >= T.obs)/B
+p_val
+```
+

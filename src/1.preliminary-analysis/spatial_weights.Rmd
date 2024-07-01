@@ -1,0 +1,140 @@
+---
+title: "Spatial weights"
+---
+
+## Data
+Loading the data
+```{r}
+set.seed(050700)
+
+root = "../.."
+source(paste(root,"include/utils.R",sep = "/"))
+
+library(readr)
+
+counties_adj <- read.table(paste(root, "data/county_adjacency2023.txt", sep="/"),
+                                      header=T, sep="|", fill=T)
+```
+
+```{r}
+library(tidyverse)
+library(urbnmapr)
+library(sf)
+```
+Number of big electors
+```{r}
+electoral_votes <- c(
+  AL = 9, AK = 3, AZ = 11, AR = 6, CA = 55, CO = 10, CT = 7, DE = 3, FL = 30, GA = 16, HI = 4, ID = 4, IL = 19,IN = 11, IA = 6, KS = 6, KY = 8, LA = 8, ME = 4, MD = 10, MA = 11, MI = 15, MN = 10, MS = 6, MO = 10, MT = 4, NE = 5, NV = 6, NH = 4, NJ = 14, NM = 5, NY = 28, NC = 16, ND = 3, OH = 17, OK = 7, OR = 8, PA = 19, RI = 4,nSC = 9, SD = 3, TN = 11, TX = 40, UT = 6, VT = 3, VA = 13, WA = 12, WV = 4, WI = 10, WY = 3
+)
+
+electoral_votes
+```
+
+
+
+## States adjacency
+```{r}
+library(spdep)
+data(state)
+
+states_nb <- usa48.nb
+states_sf <- get_urbn_map(map = "states", sf = TRUE)
+
+states_reord <- states_sf %>%
+  subset(!state_abbv %in% c("DC", "AK", "HI")) |>
+  slice(match(state.abb, state_abbv))
+
+subset(states_reord, !state_abbv %in% c("DC", "AK", "HI")) |> 
+  st_geometry() |> 
+  st_centroid(of_largest_polygon = TRUE) -> coords 
+```
+
+Plotting
+```{r}
+states_reord |> 
+    st_geometry() |> 
+    plot(border = "grey", lwd = 0.5)
+
+usa48.nb |>
+  plot(coords = coords, add = TRUE, 
+               points = FALSE, lwd = 0.5)
+```
+
+
+## Counties adjacency
+Loading the file
+```{r}
+counties_adj <- read.table(paste(root, "data/county_adjacency2023.txt", sep="/"),
+                                      header=T, sep="|", quote="\"")
+
+counties_adj$County.GEOID <- unlist(lapply(counties_adj$County.GEOID, 
+                                    function(x) sprintf("%05d", x)))
+counties_adj$Neighbor.GEOID <-  unlist(lapply(counties_adj$Neighbor.GEOID,
+                                              function(x) sprintf("%05d", x)))
+
+counties_adj <- as.data.frame(counties_adj)
+
+counties_adj <- subset(counties_adj, 
+                       counties_adj$County.GEOID != counties_adj$Neighbor.GEOID)
+head(counties_adj)
+```
+
+Removing the counties that are not in the counties_sf df
+```{r}
+counties_to_remove <- c(unlist(setdiff(counties_adj$County.GEOID, 
+                                       counties_sf$county_fips)), 
+                        setdiff(counties_sf$county_fips, 
+                                counties_adj$County.GEOID)
+)
+
+counties_adj <- subset(counties_adj, !County.GEOID %in% counties_to_remove)
+```
+
+
+
+```{r}
+adj_list <- counties_adj %>%
+  group_by(County.GEOID, .add=T) %>%
+  summarise(neighbors = list(Neighbor.GEOID))
+
+
+adj_list <- lapply(adj_list$neighbors, match, unique(adj_list$County.GEOID))
+```
+
+
+```{r}
+library(ade4)
+
+neig_obj <- neig(list=adj_list)
+
+nb_loaded <- neig2nb(neig_obj)
+```
+
+```{r}
+opar <- par(mar = c(0,0,0,0)+0.5)
+counties_sf |> 
+    st_geometry() |> 
+    plot(border = "grey", lwd = 0.5)
+
+nb_loaded |> plot(coords = coords[match(unique(counties_adj$County.GEOID), counties_sf$county_fips),], 
+                  add = TRUE, points = FALSE, lwd = 0.5)
+
+par(opar)
+```
+## Weights object
+```{r}
+(nb_loaded |> 
+    nb2listw(style = "B") -> lw_q_B) |> 
+    spweights.constants() |> 
+    data.frame() |> 
+    subset(select = c(n, S0, S1, S2))
+```
+
+```{r}
+(nb_loaded |> 
+        nb2listw(style = "W") -> lw_q_W) |> 
+    spweights.constants() |> 
+    data.frame() |> 
+    subset(select = c(n, S0, S1, S2))
+```
+

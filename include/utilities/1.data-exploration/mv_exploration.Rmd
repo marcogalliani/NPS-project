@@ -1,0 +1,227 @@
+---
+title: "Multivariate data exploration"
+---
+
+
+Packages:
+
+- the main package to compute depth measures is DepthProc
+- hexbin serves density visualization purposes
+- another important package is aplpack, which computes and plots the bagplots
+```{r}
+library(MASS)
+library(rgl)
+library(DepthProc)
+library(hexbin)
+library(aplpack)
+library(robustbase)
+library(MDBED)
+```
+
+
+# 1. An introductory example
+On synthetic data
+```{r}
+set.seed(2781991) # reproducibility
+n <- 500
+
+df_bivariate_exp <- cbind(rexp(n), rexp(n))
+head(df_bivariate_exp)
+
+# visualization
+plot(df_bivariate_exp[,1],df_bivariate_exp[,2], xlab="exp 1", ylab="exp 2")
+
+bin <- hexbin(df_bivariate_exp[,1],df_bivariate_exp[,2], xbins=10, xlab="exp 1", ylab="exp 2")
+plot(bin, main="Hexagonal Binning") 
+```
+
+Actually computing depth measures
+
+The main measures we're gonna use are the Tukey Depth and the Mahalanobis depth. Let's recall the definitions
+
+- Tukey depth (also Half-space depth):
+$$
+HD(F;x) = \inf_H\{P(H): H \text{ is a closed half-space in } \mathbb{R}^d \text{ and } x \in H \}
+$$
+where $F$ is the cumulative distribution associate with the multivariate distribution of the data and $P(H)$ prob. of the subspace $H$
+
+- Mahalanobis depth:
+$$
+M_hD(F;x) = [1+(x-\mu_F)^T\Sigma^{-1}(x-\mu_F)]^{-1}
+$$
+However, the Mahalanobis is not robust
+
+There exist other depth measures, like the Simplicial(or Liu) and the Oja depth but are not implemented in DepthProc
+
+Computing the depth measures is as simple as
+```{r}
+tukey_depth <- depth(u=df_bivariate_exp,method='Tukey')
+```
+
+And to each measure is associated a median, namely the point with maximum depth
+```{r}
+depthMedian(df_bivariate_exp,depth_params = list(method='Tukey'))
+df_bivariate_exp[which.max(tukey_depth),]
+```
+
+To visualize the depth:
+```{r}
+# contour plot
+depthContour(df_bivariate_exp,depth_params = list(method='Tukey'))
+
+# 3d plot
+depthPersp(df_bivariate_exp,depth_params = list(method='Tukey'))
+```
+*Remark* Anything that comes out of depthContour or depthPersp is NOT a density: we are not doing density estimation here, we are performing data exploration by means of a nonparametric procedure. Let us plot the probability density function (NOT the depth function) of the bivariate exponential distribution we drew a sample from:
+
+```{r}
+PDF_3dPlot(rho = 0, Betax = 1, Betay = 1, title="PDF (NOT depth function) of the bivariate exponential distribution", zlabel="")
+```
+We notice that the tukey depth concentrates around the median, where as the exponential bivariate function increases as x,y go to 0.
+
+
+# 2. Bagplots and outlier detection
+```{r}
+mu_good <- c(0,0) 
+mu_outliers <- c(7,7)
+
+sigma_common <- matrix(c(1,.7,.7,1), ncol = 2)
+
+frac <- .05
+n <- 100
+
+# sample points
+n_good=ceiling(n*(1-frac))
+n_outliers=n-n_good
+df_contaminated_normals = data.frame(rbind(
+  mvrnorm(n_good, mu_good, sigma_common),
+  mvrnorm(n_outliers, mu_outliers, sigma_common)
+))
+
+#visualization
+class <- c(rep(1,n_good),rep(2,n_outliers))
+plot(df_contaminated_normals,xlab="Norm 1", ylab="Norm 2",col=class)
+```
+
+Computing the depth
+```{r}
+depthContour(
+  df_contaminated_normals,
+  depth_params = list(method = 'Tukey'),
+  points = TRUE,
+  colors = colorRampPalette(c('white', 'navy')),
+  levels = 10,
+  pdmedian = F,
+  graph_params = list(cex=.01, pch=1),
+  pmean = F
+)
+```
+
+Using the aplpack to compute bagplots
+```{r}
+bagplot_cont_normals <- bagplot(df_contaminated_normals)
+```
+
+Recall some definitions related to the bagplot
+
+
+- The bag is composed of the deepest 50% of the data
+- The fence separates the outliers from the other observations
+- The loop contains data between the bag and the fence
+- Naturally, the median (i.e. the deepest datum) is inside the bag. 
+
+From the bagplot function we can get the outliers, namely the points outside the fences
+```{r}
+outlying_obs <- bagplot_cont_normals$pxy.outlier
+outlying_obs
+```
+
+# 3. Higher dimensions (>2)
+
+You can notice that outlier detection becomes more difficult when the dimension increases, as some outliers may be wrongly flagged as genuine points (masking) some good points may be wrongly flagged as outliers (swamping)
+
+```{r}
+milk_1 <- readRDS("milk_samples_1.Rds")
+
+head(milk_1)
+str(milk_1)
+
+aplpack::bagplot.pairs(milk_1)
+```
+
+Sequential detection of outliers
+```{r}
+var_pairs <- list(c(1,2),c(1,3),c(2,3))
+outl_indices <- numeric()
+
+for(cols in var_pairs){
+  bg_plot <-bagplot(milk_1[,cols])
+  outl_indices <- c(outl_indices,
+                    which(apply(milk_1[,cols],1,
+                                function(x) all(x %in% bg_plot$pxy.outlier))))
+}
+
+outl_indices <- sort(unique(outl_indices))
+```
+
+Visualization
+```{r}
+# Custom panel function to color points
+panel.color.points <- function(x, y, ...) {
+  points(x, y, col = ifelse(seq_along(x) %in% outl_indices, 'red', 'black'), ...)
+}
+
+# Create pairs plot with custom panel
+pairs(milk_1, panel = panel.color.points, main = "Outliers")
+```
+
+# 4. DD-plots
+For two probability distributions $F$ and $G$, both in $\mathbb{R}^d$, and $D()$ an affine-invariant depth, we can define depth vs. depth plot being very useful generalization of the one dimensional quantile-quantile plot:
+
+$$
+DD(F,G)=\{(D(F,x),D(G,x)) \text{ for all } x\in\mathbb{R}^d\}
+$$
+
+Its sample counterpart calculated for two samples $X={X1,\dots,Xn}$ from $F$, and $Y={Y1,\dots,Ym}$ from $G$
+is defined as
+
+$$
+DD(F_n,G_m)=\{(D(F_n,z),D(G_m,z)), \quad z∈{X∪Y}\}
+$$
+
+Test with some data:
+```{r}
+mu_good = rep(0,3)
+mu_outliers = c(12,12,3)
+
+sigma_common = diag(3)*2
+
+frac = .1
+n=300
+# sample points
+n_good=ceiling(n*(1-frac))
+n_outliers=n-n_good
+df_3 = data.frame(rbind(
+  mvrnorm(n_good, mu_good, sigma_common),
+  mvrnorm(n_outliers, mu_outliers, sigma_common)
+))
+class <- c(rep(1,n_good),rep(2,n_outliers))
+pairs(df_3, col=class)
+```
+
+The ddPlot function automatically computes and plots it:
+```{r}
+df_good <- df_3[1:n_good,]
+df_out <- df_3[(n_good+1):n,]
+ddPlot(x = df_good,y = df_out,depth_params = list(method='Tukey'))
+```
+We see that data comes from very different distributions
+
+Other data
+```{r}
+n_extra <- 100
+df_extra <- data.frame(mvrnorm(n_extra, mu_good, sigma_common))
+
+ddPlot(x = df_extra, df_good,depth_params=list(method='Tukey'))
+```
+In this case they line up very good

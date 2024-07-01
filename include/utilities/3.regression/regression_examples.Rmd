@@ -1,0 +1,676 @@
+---
+"Non-parametric regression: examples"
+---
+
+## Polynomial regression
+
+### Simple example
+```{r}
+library(ISLR2)
+library(car)
+
+data(Wage)
+wage <- Wage$wage
+age <- Wage$age
+plot(age, wage)
+```
+Orthogonal polynomials vs Non orthogonal polynomials:
+
+as we can see here we're getting exactly the same results
+```{r warning=FALSE}
+m_list <- lapply(1:10,function(degree){lm(wage ~ poly(age,degree=degree))})
+knitr::kable(do.call(anova,m_list))
+
+m_list_raw <- lapply(1:10,function(degree){lm(wage ~ poly(age,degree=degree,raw=T))})
+knitr::kable(do.call(anova,m_list_raw))
+```
+However, orthogonal polynomials are preferred in regression as the situation gets badly messed up if I try classic t-test based model selection:
+
+```{r}
+# poly up to 5
+knitr::kable(summary(m_list[[5]])$coefficients)
+knitr::kable(summary(m_list_raw[[5]])$coefficients)
+
+# poly up to 4
+knitr::kable(summary(m_list[[4]])$coefficients)
+knitr::kable(summary(m_list_raw[[4]])$coefficients)
+```
+
+Let's see some diagnostic on the model that appears the best one (namely the one with poly of degree 4)
+```{r}
+plot(m_list[[4]])
+```
+
+Prediction bands
+```{r}
+age.grid <- seq(range(age)[1],range(age)[2],by=0.5)
+
+preds <- predict(m_list[[4]],list(age=age.grid),se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit,
+                  preds$fit -2* preds$se.fit)
+
+# visualizing the fit
+plot(age, wage ,xlim=range(age.grid) ,cex =.5, col =" darkgrey ",main='Degree 4 Poly - Fit')
+lines(age.grid,preds$fit ,lwd =2, col =" blue")
+matlines (age.grid ,se.bands ,lwd =1, col =" blue",lty =3)
+```
+
+Let's see a model that overfit instead
+```{r}
+age.grid <- seq(range(age)[1],range(age)[2],by=0.5)
+
+preds <- predict(m_list[[10]], list(age=age.grid),se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit,
+                  preds$fit -2* preds$se.fit)
+
+# visualizing the fit
+plot(age, wage ,xlim=range(age.grid) ,cex =.5, col =" darkgrey ",main='Degree 10 Poly - Fit')
+lines(age.grid,preds$fit ,lwd =2, col =" blue")
+matlines (age.grid ,se.bands ,lwd =1, col =" blue",lty =3)
+```
+
+Polynomial GLM:
+-> we're predicting over the wage higher than 250
+```{r}
+m_list_logit <- lapply(1:5,
+                       function(degree){glm(I(wage>250) ~ poly(age,degree=degree),
+                                            family='binomial')}
+                       )
+
+knitr::kable(do.call(what = anova, c(list(test="Chisq"), m_list_logit)))
+```
+
+It seems that a small model here may suffice
+```{r}
+preds <- predict(m_list_logit[[2]],
+                 list(age=age.grid),se=T)  
+
+
+pfit <- exp(preds$fit )/(1+ exp( preds$fit ))  # apply logistic function
+
+se.bands.logit = cbind(preds$fit +2* preds$se.fit , preds$fit -2*
+                         preds$se.fit)
+se.bands = exp(se.bands.logit)/(1+ exp(se.bands.logit))  # same for std errors
+
+#visualization
+plot(age ,I(wage >250) ,xlim=range(age.grid) ,type ="n",ylim=c(0 ,.2) )
+points (jitter (age), I((wage >250) /5) ,cex =.5, pch ="|",
+          col =" darkgrey ", main='Poly 4 Fit - Logistic')
+lines(age.grid ,pfit ,lwd =2, col =" blue")
+matlines (age.grid ,se.bands ,lwd =1, col =" blue",lty =3)
+```
+
+
+
+```{r}
+preds <- predict(m_list_logit[[4]],
+                 list(age=age.grid),se=T)  
+
+
+pfit <- exp(preds$fit )/(1+ exp( preds$fit ))  # apply logistic function
+
+se.bands.logit = cbind(preds$fit +2* preds$se.fit , preds$fit -2*
+                         preds$se.fit)
+se.bands = exp(se.bands.logit)/(1+ exp(se.bands.logit))  # same for std errors
+
+#visualization
+plot(age ,I(wage >250) ,xlim=range(age.grid) ,type ="n",ylim=c(0 ,.2) )
+points (jitter (age), I((wage >250) /5) ,cex =.5, pch ="|",
+          col =" darkgrey ", main='Poly 4 Fit - Logistic')
+lines(age.grid ,pfit ,lwd =2, col =" blue")
+matlines (age.grid ,se.bands ,lwd =1, col =" blue",lty =3)
+```
+
+## Step regression
+```{r}
+with(Prestige,plot(income,prestige))
+abline(lm(prestige~income, data=Prestige))
+```
+By looking at the data we could set a cutpoint at 10000 for binning, then it all comes down to two OLS fit
+```{r}
+m_cut <-lm(prestige ~ cut(income, breaks = c(-Inf,10000,max(income))), data=Prestige)
+
+broom::tidy(summary(m_cut)) %>% 
+  dplyr::mutate(term=ifelse(term=="(Intercept)",term, "income_cut(1e+04,2.59e+04]")) # all this mess to have a nice name on the summary table
+```
+
+Visualization
+```{r}
+income.grid <- with(Prestige, seq(range(income)[1],range(income)[2],by=10))
+
+preds <- predict(m_cut,list(income=income.grid),se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+with(Prestige, 
+     plot(income, prestige,
+          xlim=range(income.grid),
+          cex =.5, col ="darkgrey",
+          main='Custom cut Fit'))
+lines(income.grid,preds$fit ,lwd =2, col ="blue")
+matlines(income.grid ,se.bands ,lwd =1, col ="blue",lty =3)
+```
+
+We may have even more flexibility
+```{r}
+uneven_breaks <- c(seq(0,10000,by=1000),seq(15000,35000,by=10000))
+
+m_cut <- lm(prestige ~ cut(income,breaks=uneven_breaks),data = Prestige)
+
+income.grid <- with(Prestige, seq(range(income)[1],range(income)[2],by=10))
+
+preds <- predict(m_cut,list(income=income.grid),se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+with(Prestige, 
+     plot(income,prestige,
+          xlim=range(income.grid),
+          cex =.5, col =" darkgrey ",
+          main='Custom cut Fit'))
+lines(income.grid,preds$fit ,lwd =2, col =" blue")
+matlines(income.grid ,se.bands ,lwd =1, col =" blue",lty =3)
+abline(v=uneven_breaks,lty=2)
+```
+
+```{r}
+summary(m_cut)
+```
+
+A comment on step regression as opposed to binning from the labs:
+
+> Step functions and Binning seem quite similar at first glance. However, there are some key differences you should know:
+- Step functions are *global estimates*: they are fitted with OLS, using the factor of belonging to the interval as a categorical variable in the lm call; whereas in binning we just take the mean of the values in such interval.
+- Binning is usually done “Uniformly” in the sense that a fixed number data are kept inside each bin, or the partition of the domain of the regressor is done in intervals of equal length.
+In a way, with step functions we are more free, as we are performing feature engineering via cuts on the regressor.
+
+## Local regression
+
+### npreg
+```{r}
+m_loc = npreg(prestige ~ income,
+              ckertype = 'uniform',
+              bws = 5000, # bandwidth
+              data = Prestige)
+```
+
+
+Here, the bandwidth parameter control the bias-variance trade-off:
+- by taking higher bandwidth values we're using more data reducing more data, reducing the data by increasing the bias locally
+- by taking smaller bandwidths we're considering more the data nearby the point we're estimating, thus getting a smaller bias but potentially a higher variance
+
+```{r}
+income_newdata <- data.frame(income=with(Prestige,
+                                      seq(range(income)[1],range(income)[2],by=0.5))
+                  )
+
+preds <- predict(m_loc,newdata=income_newdata,se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+with(
+  Prestige,
+  plot(
+    income ,
+    prestige ,
+    xlim = range(income_newdata$income) ,
+    cex = .5,
+    col = " darkgrey ",
+    main = 'Local Averaging - bws3200 - Uniform kernel'
+  )
+)
+lines(income_newdata$income,preds$fit ,lwd =2, col =" blue")
+matlines(income_newdata$income,se.bands ,lwd =1, col =" blue",lty =3)
+```
+
+Using a different kernel function
+```{r}
+m_loc = npreg(prestige ~ income,
+              ckertype = 'gaussian',
+              bws = 3200, # bandwidth
+              data = Prestige)
+
+income_newdata <- data.frame(income=with(Prestige, seq(range(income)[1],range(income)[2],by=0.5)))
+
+preds <- predict(m_loc,newdata=income_newdata,se=T)
+se.bands=cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+with(
+  Prestige,
+  plot(
+    income ,
+    prestige ,
+    xlim = range(income_newdata$income) ,
+    cex = .5,
+    col = " darkgrey ",
+    main = 'Local Averaging - bws3200 - Gaussian kernel'
+  )
+)
+lines(income_newdata$income,preds$fit ,lwd =2, col =" blue")
+matlines(income_newdata$income,se.bands ,lwd =1, col =" blue",lty =3)
+```
+
+Other packages
+### KernSmooth
+```{r}
+m_kern_smooth <- with(Prestige,
+                      KernSmooth::locpoly(x = income, y = prestige, 
+                                          bandwidth = 3200, degree = 0,
+                           range.x = c(range(income)[1], range(income)[2]), 
+                           gridsize = nrow(income_newdata)))
+
+all(dplyr::near(m_kern_smooth$y,preds$fit,tol = 1e-1)) # somewhat different approx up to .1
+```
+
+By using locpoly we can set up the degree used by the local polynomials
+```{r}
+m_kern_smooth <- with(Prestige,
+                      KernSmooth::locpoly(x = income, y = prestige, 
+                                          bandwidth = 3200, degree = 1,
+                           range.x = c(range(income)[1], range(income)[2]), 
+                           gridsize = nrow(income_newdata)))
+
+with(
+  Prestige,
+  plot(
+    income ,
+    prestige ,
+    xlim = range(income_newdata$income) ,
+    cex = .5,
+    col = " darkgrey ",
+    main = 'Local Averaging - bws3200 - Gaussian kernel'
+  )
+)
+lines(income_newdata$income,m_kern_smooth$y ,lwd =2, col =" blue")
+```
+
+### loess
+Furthermore, also the built-in `loess` function can be used for local
+polynomial regression fitting. Contrarily to `locpoly` and `npreg`,
+`loess` has a different control of the bandwidth by means of the span
+argument, defining the proportion of points of the sample that are taken
+into account for performing the local fit. Additionally, `loess` uses a
+triweight kernel for weighting the points contributions:
+$$
+K_{triweight}(z(\alpha)) = \mathbb{1}_{\{|z|\leq1\}} (1-|z^3|)^2
+$$
+where 
+$$
+z = z(\alpha) = \frac{x_i-x_0}{h(\alpha)}, \alpha \in (0,1)
+$$
+where the bandwidth $h$ is a function of the span $\alpha$.
+
+```{r}
+m_loess = loess(prestige ~ income,
+                span = .35, 
+                degree=0,  # becomes Nadaraya-Watson estimator
+              data = Prestige)
+preds_loess=predict(m_loess,newdata=income_newdata,se=T)
+se.bands_loess=cbind(preds_loess$fit +2* preds_loess$se.fit ,preds_loess$fit -2* preds_loess$se.fit)
+with(
+  Prestige,
+  plot(
+    income ,
+    prestige ,
+    xlim = range(income_newdata$income) ,
+    cex = .5,
+    col = " darkgrey ",
+    main = 'Local Polynomial Regression - span= 0.35 - Triweight kernel'
+  )
+)
+lines(income_newdata$income,preds_loess$fit ,lwd =2, col =" green")
+matlines(income_newdata$income,se.bands_loess ,lwd =1, col =" green",lty =3)
+```
+
+## Splines
+
+### Introduction
+Let's jump back to step regression, fitting first-order polynomials (lines) step-wisely
+```{r}
+cutoff <- 10000
+
+step.poly1.model <- lm(prestige ~ income*I(income>cutoff),
+                 data=Prestige)
+```
+
+Visualization
+```{r}
+new_data <-
+  with(Prestige, data.frame(
+    income = seq(range(income)[1], range(income)[2], by = 0.5)
+  ))
+
+preds <- predict(step.poly1.model, new_data, se=T)
+
+se.bands <- cbind(preds$fit +2* preds$se.fit,
+                  preds$fit -2* preds$se.fit)
+
+with(Prestige, plot(income, prestige, xlim=range(new_data$income),
+                    cex =.5, col =" darkgrey "))
+lines(new_data$income, preds$fit, lwd =2, col =" blue")
+matlines(new_data$income, se.bands ,lwd =1, col =" blue",lty =3)
+```
+
+Let's increase the order of the polynomials
+```{r}
+step.poly2.model <- lm(prestige ~ poly(income,degree=2)*I(income>cutoff),
+                 data=Prestige)
+```
+
+Visualization
+```{r}
+preds <- predict(step.poly2.model, new_data, se=T)
+se.bands <- cbind(preds$fit +2*preds$se.fit,
+                  preds$fit -2*preds$se.fit)
+
+with(Prestige, plot(income ,prestige ,xlim=range(new_data$income),
+                    cex =.5, col ="darkgrey"))
+lines(new_data$income,preds$fit, lwd=2, col="blue")
+matlines(new_data$income, se.bands, lwd=1, col ="blue",lty =3)
+```
+
+Now let's impose continuity at the knots, fitting a proper spline
+```{r}
+spline.poly1.model <- lm(prestige ~ income + I(income - cutoff):I(income>cutoff),
+                 data=Prestige)
+
+summary(spline.poly1.model)
+```
+
+Visualization
+```{r}
+preds <- predict(spline.poly1.model, new_data, se=T)
+se.bands <- cbind(preds$fit +2*preds$se.fit,
+                  preds$fit -2*preds$se.fit)
+
+with(Prestige, plot(income ,prestige ,xlim=range(new_data$income),
+                    cex =.5, col ="darkgrey"))
+lines(new_data$income,preds$fit, lwd=2, col="blue")
+matlines(new_data$income, se.bands, lwd=1, col ="blue",lty =3)
+```
+
+### B-splines basis
+The same model can be fitted using the `splines` package
+
+The idea underlying regression splines relies on:
+
+1. Specification of a set of knots
+2. producing sequence of basis functions (yields design matrix)
+3. Using least squares for estimating coefficients.
+
+```{r}
+linear.splines <- lm(prestige ~ bs(income, knots=c(10000),degree=1), data=Prestige)
+```
+
+Visualization
+```{r}
+preds <- predict(linear.splines, new_data, se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+with(Prestige, plot(income ,prestige ,xlim=range(new_data$income) ,cex =.5, col =" darkgrey " ))
+lines(new_data$income,preds$fit ,lwd =2, col =" blue")
+matlines(new_data$income, se.bands ,lwd =1, col =" blue",lty =3)
+```
+
+Predictions are the same but coefficients are not. The reason is the basis representation of the splines:
+- the first implementation employs a truncated power basis
+- the splines implementation uses computationally efficient B-spline basis
+
+We can increase the number of knots and change the order of the local polynomials
+```{r}
+inc_breaks <- c(seq(0, 10000, by = 2500)[-1], 15000)
+
+linear.splines <- lm(prestige ~ bs(income, knots = inc_breaks, degree = 1), 
+                     data = Prestige)
+
+# visualization
+preds <- predict(linear.splines, new_data,se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+with(Prestige, plot(income ,prestige ,xlim=range(new_data$income) ,cex =.5, col ="darkgrey"))
+lines(new_data$income,preds$fit ,lwd =2, col="blue")
+matlines(new_data$income, se.bands ,lwd =1, col="blue",lty =3)
+```
+
+Piecewise-quadratic
+```{r}
+inc_breaks <- c(seq(0, 10000, by = 2500)[-1], 15000)
+
+quadratic.splines <- lm(prestige ~ bs(income, knots = inc_breaks, degree = 2), 
+                     data = Prestige)
+
+# visualization
+preds <- predict(quadratic.splines, new_data,se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+with(Prestige, plot(income ,prestige ,xlim=range(new_data$income) ,cex =.5, col ="darkgrey"))
+lines(new_data$income,preds$fit ,lwd =2, col="blue")
+matlines(new_data$income, se.bands ,lwd =1, col="blue",lty =3)
+```
+
+Piecewise-cubic
+```{r}
+inc_breaks <- c(seq(0, 10000, by = 2500)[-1], 15000)
+
+cubic.splines <- lm(prestige ~ bs(income, knots = inc_breaks, degree = 3), 
+                     data = Prestige)
+
+# visualization
+preds <- predict(cubic.splines, new_data,se=T)
+se.bands <- cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+with(Prestige, plot(income ,prestige ,xlim=range(new_data$income) ,cex =.5, col ="darkgrey"))
+lines(new_data$income,preds$fit ,lwd =2, col="blue")
+matlines(new_data$income, se.bands ,lwd =1, col="blue",lty =3)
+```
+
+Note that the number of degrees of freedom equals the number of knots plus the degree of the local polynomial used to fit the model
+
+If we select the degrees of freedom and the degrees of the polynomials R will automatically set the spacing of the knots
+```{r}
+cubic.splines <- lm(prestige ~ bs(income, degree = 3, df = 7), data = Prestige)
+
+preds=predict(cubic.splines, new_data,se=T)
+se.bands=cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+with(Prestige, plot(income ,prestige ,xlim=range(new_data$income) ,cex =.5, col =" darkgrey " ))
+lines(new_data$income,preds$fit ,lwd =2, col =" blue")
+matlines(new_data$income, se.bands ,lwd =1, col =" blue",lty =3)
+
+knots <- attr(bs(Prestige$income, degree=3,df=7),'knots')
+knots_pred=predict(cubic.splines,list(income=knots))
+points(knots,knots_pred, col='blue',pch=19)
+abline(v = knots, lty=3)
+```
+
+### Natural splines
+To avoid weird behavior at the boundaries of the domain? We can employ **natural splines**
+
+**Recall**:
+
+* A Spline is a Piecewise Polynomial regression constrained to be continuous at its knots.
+* A Natural Spline is a Spline such that:
+  - Aimed at reducing variance at boundaries of the domain.
+  - There is a Polynomial of degree $k$ in each "interior" interval of the partition induced by the knots.
+  - There is a Polynomial of degree $\frac{k-1}{2}$ on the boundary intervals.
+  - Continuos derivatives at the knots.
+  - The spline basis is orthonormal.
+* A Smoothing Spline is a Natural Spline with a curvature penalty in the objective function.
+
+```{r}
+knots <- quantile(Prestige$income,probs=c(0.1,0.5,0.9))
+boundary_knots <- quantile(Prestige$income,probs=c(0.05,0.95))
+
+model_ns <- lm(prestige ~ ns(income,knots=knots,Boundary.knots=boundary_knots), 
+               data=Prestige)
+```
+
+Visualization
+```{r}
+preds=predict(model_ns, new_data,se=T)
+se.bands=cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+with(Prestige, plot(income ,prestige ,xlim=range(new_data$income) ,cex =.5, col =" darkgrey " ))
+lines(new_data$income,preds$fit ,lwd =2, col =" blue")
+matlines(new_data$income, se.bands ,lwd =1, col =" blue",lty =3)
+
+knots_pred=predict(model_ns,list(income=knots))
+points(knots,knots_pred, col='blue',pch=19)
+boundary_pred <- predict(model_ns,list(income=boundary_knots))
+points(boundary_knots,boundary_pred,col='red',pch=19)
+abline(v = knots, lty=3, col="blue")
+abline(v = boundary_knots, lty=3, col="red")
+```
+#### 2022-01
+```{r}
+past_exams_fold <- "../../past-exams"
+milk_2 <- readRDS(paste(past_exams_fold,"2022-01-21/milk_samples_2.Rds",sep="/"))
+
+head(milk_2)
+str(milk_2)
+```
+
+```{r}
+knots <- quantile(milk_2$wave_70,probs=c(0.25,0.5,0.75))
+boundary_knots <- quantile(milk_2$wave_70,probs=c(0.05,0.95))
+
+splines.ns.fit <- lm(Native_pH ~ ns(wave_70, knots=knots, Boundary.knots=boundary_knots), 
+            data=milk_2) #defaults to three knots
+```
+
+Visualization
+```{r}
+#test grid
+wave_70_grid <-
+  with(milk_2, data.frame(
+    wave_70 = seq(range(wave_70)[1], range(wave_70)[2], by = 0.001)
+  ))
+
+#prediction over the grid
+preds=predict(splines.ns.fit, wave_70_grid,se=T)
+se.bands=cbind(preds$fit +2* preds$se.fit ,preds$fit -2* preds$se.fit)
+
+#plot
+with(milk_2, 
+     plot(wave_70 ,Native_pH ,
+          xlim=range(wave_70_grid$wave_70),
+          cex =.5, col =" darkgrey " ))
+lines(wave_70_grid$wave_70, preds$fit ,lwd =2, col =" blue")
+
+matlines(wave_70_grid, se.bands ,lwd =1, col =" blue",lty =3)
+
+knots_pred=predict(splines.ns.fit, list(wave_70=knots))
+points(knots,knots_pred, col='blue',pch=19)
+
+boundary_pred <- predict(splines.ns.fit,list(wave_70=boundary_knots))
+points(boundary_knots,boundary_pred,col='red',pch=19)
+
+abline(v = knots, lty=3, col="blue")
+abline(v = boundary_knots, lty=3, col="red")
+```
+
+
+
+### Smoothing splines
+Adding a roughness penalization over the natural splines basis
+```{r}
+fit_smooth_spline <- with(Prestige, 
+                          smooth.spline(income,prestige, df=100))
+
+with(Prestige, plot(income ,prestige, cex =.5, col =" darkgrey "))
+lines(fit_smooth_spline,col="blue",lwd=2)
+```
+Decreasing the degrees of freedom
+```{r}
+fit_smooth_spline <- with(Prestige, smooth.spline(income,prestige,df=20))
+
+with(Prestige, plot(income ,prestige, cex =.5, col =" darkgrey "))
+lines(fit_smooth_spline,col="blue",lwd=2)
+```
+
+Fixing the lambda by hand
+```{r}
+fit_smooth_spline <- with(Prestige, smooth.spline(income,prestige,lambda = 1e-1))
+
+with(Prestige, plot(income ,prestige, cex =.5, col =" darkgrey "))
+lines(fit_smooth_spline,col="blue",lwd=2)
+```
+
+Set by $\lambda$ by CV or by GCV
+```{r}
+fit_smooth_spline_CV <- with(Prestige, smooth.spline(income,prestige,cv = TRUE))
+fit_smooth_spline_GCV <- with(Prestige, smooth.spline(income,prestige,cv = FALSE))
+
+with(Prestige, plot(income ,prestige, cex =.5, col =" darkgrey "))
+lines(fit_smooth_spline_CV,col="red",lwd=2,lty=1)
+lines(fit_smooth_spline_GCV,col="blue",lwd=2, lty=2)
+legend(20000, 30, legend=c("CV", "GCV"),
+       col=c("red", "blue"), lty=1:2, cex=0.8)
+```
+
+## GAMs
+
+### Cubic splines smoothing
+```{r}
+gam.smooth.fit <- gam(prestige ~ s(education,bs='cr') + s(income,bs='cr'),
+               data = Prestige)
+
+summary(gam.fit)
+```
+The “approximate significance of smooth terms”: Effective degrees of freedom (edf) is a summary statistic of GAM and it reflects the degree of non-linearity of a curve.
+
+```{r}
+plot.gam(gam.fit, se=TRUE)
+```
+#### 2022-01
+```{r}
+past_exams_fold <- "../../past-exams"
+milk_2 <- readRDS(paste(past_exams_fold,"2022-01-21/milk_samples_2.Rds",sep="/"))
+
+head(milk_2)
+str(milk_2)
+```
+
+```{r}
+library(mgcv)
+
+ex.gam.fit <- gam(Native_pH ~ s(wave_70, bs = 'cr') + 
+                  s(wave_300, bs ='cr') + 
+                  s(I(wave_70 * wave_300), bs = 'cr'),
+                data = milk_2)
+
+summary(ex.gam.fit)
+```
+
+
+### Natural spline smoothing
+- `mgcv` works with smoothing bases but actually GAMs work with every type of univariate smoother
+- for instance, we can use natural cubic splines by fitting the model using the `lm`function to fit
+
+```{r}
+gam.ns.fit <- lm(prestige ~ ns(education, df=3) + ns(income, df=3),
+               data = Prestige)
+
+gam::plot.Gam(gam.ns.fit, se=TRUE)
+```
+Pretty much the same fit as before
+```{r}
+cor(residuals(gam.fit),residuals(gam.ns.fit))
+```
+
+### Semi-parametric model
+```{r}
+gam.fit.reduced <- gam(prestige ~ education + s(income,bs='cr'),
+                       data = Prestige)
+
+summary(gam.fit.reduced)
+```
+
+Compare with the first model
+```{r}
+anova(gam.fit, gam.fit.reduced, test = "F")
+```
+
+### Thin-splate splines
+```{r}
+gam.fit.tp <- gam(prestige ~ s(education, income, bs="tp", m=2), # m for order
+                  data = Prestige)
+
+summary(gam.fit.tp)
+```
+

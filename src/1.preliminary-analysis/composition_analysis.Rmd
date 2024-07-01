@@ -1,0 +1,79 @@
+---
+title: "Compositional Data Analysis"
+---
+
+```{r}
+root = "../.."
+source(paste(root,"include/utils.R",sep = "/"))
+
+library(readr)
+clean_data <- read_csv(paste(root, "data/clean_merged_data.csv", sep="/"))
+```
+
+```{r}
+library(compositions)
+library(hexbin)
+library(ggtern)
+```
+
+## Elections percentages
+
+Basic compositional plots
+```{r}
+elect_results <- list()
+
+elect_results[["2020"]] <- acomp(clean_data, c("gop_pct20", "dem_pct20", "others_pct20"))
+
+plot(elect_results[["2020"]])
+ggtern(elect_results[["2020"]], aes(gop_pct20, others_pct20, dem_pct20)) +
+  stat_density_tern(geom = "polygon",
+                    bins=100, 
+                    contour = TRUE, 
+                    base = "ilr",
+                    bdl = 0.001,
+                    aes(fill=after_stat(level)))
+```
+Isometric transformation to an euclidean space
+```{r}
+plot(ilr(elect_results[["2020"]]))
+```
+
+
+## Ethnic composition
+```{r warning=FALSE}
+ethnic_composit <- clean_data[,c("white_pct", "black_pct", "hispanic_pct")]
+ethnic_composit$other_pct <- 100 - rowSums(ethnic_composit)
+
+boxplot(ethnic_composit$other_pct)
+
+ethnic_composit <- acomp(ethnic_composit, parts=c("white_pct", "black_pct", "hispanic_pct", "other_pct"))
+
+plot(ethnic_composit)
+
+ggtern(ethnic_composit, aes(white_pct, black_pct, hispanic_pct)) +
+  geom_hex_tern(fun = function(z){ sum(z)/dim(ethnic_composit)[1]},
+                bins = 20)
+```
+
+## Age group composition
+```{r}
+age_composit <- clean_data[ ,c("age29andunder_pct", "age65andolder_pct")]
+age_composit$age30to64 <- 100 - rowSums(age_composit)
+
+age_composit <- acomp(age_composit, parts=c("age29andunder_pct", "age30to64", "age65andolder_pct"))
+
+plot(age_composit)
+
+ggtern(age_composit, aes(age29andunder_pct, age65andolder_pct, age30to64)) +
+  stat_density_tern(geom = "polygon",
+                    bins=100, 
+                    contour = TRUE, 
+                    base = "ilr",
+                    bdl = 0.001,
+                    aes(fill=after_stat(level))
+                    )
+```
+```{r}
+plot(ilr(age_composit), )
+```
+

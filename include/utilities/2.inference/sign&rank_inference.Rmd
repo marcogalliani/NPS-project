@@ -1,0 +1,467 @@
+---
+title: "Sign & Rank tests"
+---
+## Sign test
+
+### One-sample
+Assumptions:
+- $X_1,\dots,X_n \sim X$ iid and continuous
+
+$$
+H_0: \text{med}(X) = c_0 \text{ vs } H_1: \text{med}(X)\neq c_0
+$$
+
+or equivalently
+$$
+H_0: \mathbb{P}(X>c_0) = 0.5 \text{ vs } H_1: \mathbb{P}(X>c_0) \neq 0.5
+$$
+
+test statistic: number of data greater than $c_0$
+$$
+W = \sum_{i=1}^n \mathbb{I}_{\{X_i > c_0\}} \sim B(n,\mathbb{P}(X>c_0))
+$$
+Under H0: $W \sim_{H_0} B(n,0.5)$ 
+
+Remarks: 
+- discrete distribution of the test statistic: p-value only takes value in the so-called achievable values, determined by the sample size $n$
+
+
+### Two sample paired sign-test
+
+Assumptions: 
+- $X_1-Y_1,\dots,X_n-Y_n \sim Z=X-Y$ iid and continuous
+
+$$
+H_0: \text{med}(X-Y) = 0 \text{ vs } H_1: \text{med}(X-y)\neq 0
+$$
+test statistic: number of $X_i$ greater than $Y_i$
+$$
+W = \sum_{i=1}^n \mathbb{I}_{\{X_i > Y_i\}} = \frac{n+\sum_{i=1}^n \text{sign}(X_i-Y_i)}{2} \sim B(n,\mathbb{P}(X>Y))
+$$
+By considering the median we're robust w.r.t. the presence of outliers
+
+#### Right-sided example
+```{r}
+X <- read.table('parziali.txt')
+
+### right-sided test
+# H0: P(PII > PI) = 0.5 
+# H1: P(PII > PI) > 0.5
+
+differences <- X$PII - X$PI
+boxplot(differences)
+```
+
+Computing the test statistic
+```{r}
+n <- length(differences)
+signs <- sign(differences)
+
+W <- sum(signs==1)
+# W <- (n+sum(signs))/2
+
+plot(0:n, dbinom(0:n, n, 0.5))
+abline(v = W, col='red')
+points(0:n, dbinom(0:n, n, 0.5), col= (0:n >= W) + 1, pch=16)
+
+p.value <- 1 - pbinom(W-1, n, 0.5) ### P( B(n,0.5) >= 51 )
+p.value
+```
+#### Two-sided example
+
+```{r}
+W <- sum(signs ==  1)
+W.max <- max(W, n-W) 
+
+plot(0:n, dbinom(0:n, n, 0.5))
+abline(v = c(W, n-W), col='red')
+points(0:n, dbinom(0:n, n, 0.5), col= (0:n >= max(W,n-W) | 0:n <= min(W,n-W)) + 1, pch=16)
+
+p.value <- 2*(1 - pbinom(W.max-1, n, 0.5) )
+### P( B(n,0.5) >= 51 OR B(n,0.5) <= 8) = 2* P( B(n,0.5) >= 51 ) = 2*P( B(n,0.5) <= 8)
+
+```
+
+#### Robustness w.r.t. outliers
+
+```{r}
+### two-sided test WITH OUTLIERS
+# H0: P(PII > PI)  = 0.5 
+# H1: P(PII > PI) != 0.5
+
+differences <- X$PII - X$PI
+differences.out <- differences
+#differences.out[1] <- differences.out[1] - 1000 # sign consistent outlier
+differences.out[1] <- differences.out[1] + 1000 # sign non-consistent outlier
+boxplot(differences)
+boxplot(differences.out)
+```
+
+```{r}
+n <- length(differences)
+signs <- sign(differences)
+signs.out <- sign(differences.out)
+
+W <- sum(signs ==  1)
+W.max <- max(W, n-W) 
+
+W.out <- sum(signs.out ==  1)
+W.max.out <- max(W.out, n-W.out) 
+
+p.value <- 2*(1 - pbinom(W.max-1, n, 0.5) )
+p.value.out <- 2*(1 - pbinom(W.max.out-1, n, 0.5) )
+
+p.value
+p.value.out
+```
+
+Comparison with the parametric t-test
+```{r}
+# Comparison with the parametric t-test
+p.value
+p.value.out
+
+t.test(differences)$p.value
+t.test(differences.out)$p.value
+
+W.max
+W.max.out
+
+t.test(differences)$statistic
+t.test(differences.out)$statistic
+```
+## Mann-Whitney U-test 
+
+### Theoretical background
+Assumptions:
+- $X_1,\dots,X_{n_1} \sim X$ i.i.d., continuous
+- $Y_1,\dots,Y_{n_2} \sim Y$ i.i.d., continuous
+- independence between the two samples
+
+$$
+H_0: X \stackrel{d}{=}Y \;\; \text{vs} \;\; H_1: \mathbb{P}[X>Y] \neq 0.5
+$$
+Test statistics:
+$$
+U_1 = \sum_{i=1}^{n_1} \sum_{j=1}^{n_2} \mathbb{I}_{\{X_i > Y_j\}} = n_1 n_2 \hat{\mathbb{P}}(X>Y) \\
+
+U_2 = \sum_{i=1}^{n_1} \sum_{j=1}^{n_2} \mathbb{I}_{\{Y_j > X_i\}} = n_1 n_2 \hat{\mathbb{P}}(Y>X) 
+$$
+being $U_1,U_2$ the number of pairwise "contests" won by the first sample and the number of pairwise "contest" won by the second sample respectively
+
+On these quantities p-values are built considering the test statistic:
+$$
+U^* = \max(U_1, U_2)
+$$
+
+Efficient computation of $U_1,U_2$:
+- define the pooled sample 
+$$
+\mathbb{X} = (X_1,\dots,X_{n_1}, Y_1,\dots,Y_{n_2})
+$$
+- compute the ranks of each observation w.r.t. the pooled sample
+$$
+\mathbb{R} = (r(X_1),\dots,r(X_{n_1}),r(Y_1),\dots,r(Y_{n_2}))
+$$
+where 
+$$
+r(X_i) = \sum_{x \in \mathbb{X}} \mathbb{I}_{\{x \leq X_i\}}, \forall i=1,\dots,n_1 \\
+
+r(Y_j) = \sum_{y \in \mathbb{X}} \mathbb{I}_{\{y \leq Y_j\}}, \forall j=1,\dots,n_2
+$$
+
+- compute the sum of the ranks of the two samples
+$$
+R_1 = \sum_{i=1}^{n_1} r(X_i) \\
+R_2 = \sum_{j=1}^{n_2} r(Y_j) 
+$$
+
+- it can be showed that 
+$$
+U_1 = R_1 - \frac{n_1(n_1+1)}{2} \\
+U_2 = R_2 - \frac{n_2(n_2+1)}{2}
+$$
+
+Remarks:
+- no explicit formulation of the distributions of $U_1,U_2$ under $H_0$.However the distribution is always the same since 
+$$
+r(X_i) \sim \mathcal{U}_{\{1, \dots, n_1+n_2\}}
+$$
+and only depends on the sample sizes
+
+- the quantile of these distributions can be estimated via MC simulations
+- U-test are invariant w.r.t. monotonic distributions since ranks are invariant w.r.t. monotonic distributions
+
+### Example
+```{r}
+X <- read.table('parziali.txt')
+G <- read.table('matricola.txt')
+```
+
+#### Manual implementation
+```{r}
+## two-sided test
+# H0: P(PI.odd > PI.even)  = 0.5 
+# H1: P(PI.odd > PI.even) != 0.5
+
+PI1 <- X$PI[G$OE == 1]
+PI2 <- X$PI[G$OE == 0]
+PI   <- X$PI
+n1 <- length(PI1)
+n2 <- length(PI2)
+n  <- length(PI)
+
+### a quick look at the dependence structure
+diff <- expand.grid(PI1, PI2)[,2] - expand.grid(PI1, PI2)[,1]
+image(1:n1, 1:n2, matrix(diff, n1, n2))
+image(1:n1, 1:n2, matrix(sign(diff), n1, n2))
+```
+Test
+```{r}
+### back to the test
+ranks.PI <- rank(PI)
+
+R1 <- sum(ranks.PI[G$OE == 1])
+U1 <- R1 - n1*(n1+1)/2  # Nr of wins of the 1st sample
+
+R2 <- sum(ranks.PI[G$OE == 0])
+U2 <- R2 - n2*(n2+1)/2  # Nr of wins of the 2nd sample
+
+n1*n2 # Nr of contests
+
+U1 - n1*n2/2  # unbalance wrt the mean under H0
+U2 - n1*n2/2  # unbalance wrt the mean under H0
+
+# MC computation of the p-value
+# Generation of U1 and U2 under the null hypothesis
+
+set.seed(24021979)
+B <- 100000
+U1.sim <- numeric(B)
+U2.sim <- numeric(B)
+for (k in 1:B)
+{
+  ranks.temp <- sample(1:n)
+  R1.temp <- sum(ranks.temp[1:n1])
+  R2.temp <- sum(ranks.temp[(n1+1):(n1+n2)])
+  U1.temp <- R1.temp - n1*(n1+1)/2
+  U2.temp <- R2.temp - n2*(n2+1)/2
+  U1.sim[k] <- U1.temp
+  U2.sim[k] <- U2.temp
+}
+
+hist(U1.sim, breaks = 50)
+abline(v = c(U1, U2), col='red')
+abline(v = n1*n2/2, lwd=3)
+
+hist(U2.sim, breaks = 50)
+abline(v = c(U1, U2), col='red')
+abline(v = n1*n2/2, lwd=3)
+
+U.star <- max(U1, U2)
+
+p.value <- 2 * sum(U1.sim >= U.star)/B
+p.value
+```
+
+#### From stats base package
+Let's verify that we're getting the same results w.r.t. the version of the algorithm implemented in R
+```{r}
+alpha <- 0.05
+
+wilcox.test(x = PI1, 
+            y = PI2,  
+            paired=F, 
+            conf.level = 1-alpha)
+```
+#### Verifying invariance
+Verifying the invariance under monotonic transformation
+```{r}
+# Let's apply a NON-LINEAR MONOTONIC TRANSFORMATION
+
+PI  <- X$PI
+PI1 <- X$PI[G$OE == 1]
+PI2 <- X$PI[G$OE == 0]
+PI.exp  <- -exp(-PI)
+PI1.exp <- -exp(-PI1)
+PI2.exp <- -exp(-PI2)
+
+plot(PI, PI.exp, col=G$OE+1)
+
+boxplot(PI)
+boxplot(PI.exp)
+
+ranks.PI <- rank(PI)
+R1 <- sum(ranks.PI[G$OE == 1])
+U1 <- R1 - n1*(n1+1)/2  
+
+ranks.PI.exp <- rank(PI.exp)
+R1.exp <- sum(ranks.PI.exp[G$OE == 1])
+U1.exp <- R1.exp - n1*(n1+1)/2
+
+U1
+U1.exp
+
+U.star     <- n1*n2/2 + abs(U1     - n1*n2/2)
+U.star.exp <- n1*n2/2 + abs(U1.exp - n1*n2/2)
+
+# no need for a new MC estimation being n1 and n2 the same as before
+p.value     <- 2 * sum(U1.sim >= U.star)/B
+p.value.exp <- 2 * sum(U1.sim >= U.star.exp)/B
+```
+```{r}
+p.value
+p.value.exp
+
+t.test(PI1,     PI2    )$p.value
+t.test(PI1.exp, PI2.exp)$p.value
+```
+
+## Wilcoxon signed-rank test
+
+
+### Theoretical background
+Extension of sign-test in which also the magnitude is taken into consideration, by computing the rank of the absolute values
+
+#### One-sample
+
+Assumptions:
+- $X_1,\dots,X_n \sim X$ iid, symmetric and continuous
+
+$$
+H_0: \text{med}(X) = c_0 \text{ vs } H_1: \text{med}(X)\neq c_0
+$$
+
+or equivalently
+$$
+H_0: \mathbb{P}(X>c_0) = 0.5 \text{ vs } H_1: \mathbb{P}(X>c_0) \neq 0.5
+$$
+
+test statistic: sum of the "absolute ranks" of positive values
+$$
+W^+ = \sum_{i=1}^n \mathbb{I}_{\{X_i > c_0\}}R(|X_i-c_0|)
+$$
+
+Under $H_0$:
+- $\mathbb{I}_{\{X_i > c_0\}} \sim B(1,0.5)$
+- $R(|X_i-c_0|) \sim \mathcal{U}_{\{1,\dots,n\}}$
+
+So the distribution of $W^+$ under $H_0$ depends only on $n$ and quantiles can be estimated via MC simulations
+
+Equivalently we can define 
+$$
+W^- = \sum_{i=1}^n \mathbb{I}_{\{X_i < c_0\}}R(|X_i-c_0|)
+$$
+
+and observe that
+$$ 
+W^+ + W^- = \frac{n(n+1)}{2}
+$$
+
+Inference can be carried out relying on $\max(W^+,W^-)$ or $|W^+-W^-|$
+
+
+#### Two sample 
+Assumptions: 
+- $X_1-Y_1,\dots,X_n-Y_n \sim Z=X-Y$ iid and continuous
+
+$$
+H_0: \text{med}(X-Y) = 0 \text{ vs } H_1: \text{med}(X-y)\neq 0
+$$
+test statistic:
+$$
+W^+ = \sum_{i=1}^n \mathbb{I}_{\{X_i > Y_i\}}R(|X_i-Y_i|)
+$$
+
+### Example
+```{r}
+### Example of two-sample paired signed rank test
+
+X <- read.table('parziali.txt')
+G <- read.table('matricola.txt')
+
+### two-sided test (for odd students)
+# H0: P(PII > PI | odd)  = 0.5 
+# H1: P(PII > PI | odd) != 0.5
+
+differences <- X$PII[G$OE == 1] - X$PI[G$OE == 1]
+boxplot(differences)
+```
+
+#### Manual implementation
+```{r}
+n <- length(differences)
+ranks <- rank(abs(differences))
+W.plus  <- sum(ranks[differences > 0])
+W.minus <- sum(ranks[differences < 0])
+
+W.plus
+W.minus
+n*(n+1)/2
+W <- W.plus - W.minus 
+# W <- sum(sign(differences)*rank(abs(differences)))
+W
+
+# MC computation of the p-value
+# Generation of W under the null hypothesis
+set.seed(24021979)
+B <- 1000000
+W.sim <- numeric(B)
+for (k in 1:B)
+{
+  ranks.temp <- sample(1:n)
+  signs.temp <- 2*rbinom(n, 1, 0.5) - 1
+  W.temp <- sum(signs.temp*ranks.temp)
+  W.sim[k] <- W.temp
+}
+
+hist(W.sim, xlim=c(-n*(n+1)/2, n*(n+1)/2), breaks = 50)
+abline(v = W, col='red')
+abline(v = 0, lwd=3)
+```
+
+Results
+```{r}
+### two-sided test
+# H0: P(PII > PI | odd)  = 0.5 
+# H1: P(PII > PI | odd) != 0.5
+p.value <- 2 * sum(W.sim >= abs(W))/B
+p.value
+
+### right-sided test
+# H0: P(PII > PI | odd) = 0.5 
+# H1: P(PII > PI | odd) > 0.5
+p.value <- sum(W.sim >= W)/B
+p.value
+
+### left-sided test
+# H0: P(PII > PI | odd) = 0.5 
+# H1: P(PII > PI | odd) < 0.5
+p.value <- sum(W.sim <= W)/B
+p.value
+```
+
+#### R implementation
+```{r}
+alpha <- 0.05
+
+wilcox.test(x = X$PII[G$OE == 1], 
+            y = X$PI[G$OE == 1],  
+            paired=T,
+            alternative="two.sided",
+            conf.level = 1-alpha)
+
+wilcox.test(x = X$PII[G$OE == 1], 
+            y = X$PI[G$OE == 1],  
+            paired=T,
+            alternative="greater",
+            conf.level = 1-alpha)
+
+wilcox.test(x = X$PII[G$OE == 1], 
+            y = X$PI[G$OE == 1],  
+            paired=T,
+            alternative="less",
+            conf.level = 1-alpha)
+```
+
+

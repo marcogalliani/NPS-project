@@ -1,0 +1,254 @@
+---
+title: "Functional data exploration"
+--- 
+
+Packages
+```{r}
+library(roahd)
+```
+
+# 1. Introduction to functional data
+
+The way `roahd` package represents functional objects is by providing an evenly spaced grid $I=\left[t_{0}, t_{1}, \ldots, t_{P-1}\right]$ $\left(t_{j}-t_{j-1}=h>0, \: \forall j=1, \ldots, P-1\right)$ over which
+the functional observations $D_{i, j}=X_{i}\left(t_{j}\right)$ (*i.e.* the $i$th function evaluated at the $j$th point of the grid) $\forall i=1, \ldots, N$ and $\forall j=0, \ldots, P-1$ are measured.
+
+This is very conveniently handled by the `fData` object class. In particular, the following model is considered for the generation of data: 
+$$
+X(t)=m(t)+\varepsilon(t), \text { for all } t \text { in } I
+$$ 
+where $m(t)$ is the mean function (deterministic) and $\varepsilon(t)$ is a centered Gaussian process with covariance function $C(\cdot,\cdot)$. That is to say: 
+$$
+\operatorname{Cov}(\varepsilon(\mathrm{s}), \varepsilon(t))=C(s, t), \text { with } s, t \text { in } I
+$$ 
+The employed structure for $C(s, t)$ is the Exponential covariance function:
+
+$$
+C(s, t)=\alpha e^{-\beta|s-t|}
+$$ 
+Where $alpha$ controls the point-wise variance, and $\beta$ the degree of covariance between points.
+
+```{r}
+P <- 101
+grid <-  seq( 0, 1, length.out =  P)
+  
+alpha <-  0.2
+beta <-  0.2
+
+C_st <- exp_cov_function( grid, alpha, beta )
+dim(C_st)  # note of course it is a covariance matrix
+
+image( C_st,
+       main = 'Exponential covariance function',
+       xlab = 'grid', ylab = 'grid')
+```
+After having defined the mean function $m(t)$
+```{r}
+m <- sin(pi*grid)+sin(2*pi*grid)
+```
+
+we are ready to generate functional data as follows
+```{r}
+n <- 100
+set.seed(26111992)
+
+data <- generate_gauss_fdata(N = n,centerline = m,Cov=C_st)
+dim(data) # 100 functions evaluated at 101 points each
+```
+
+Plot options:
+- hard-coded
+```{r}
+matplot(grid,t(data), type="l", col=adjustcolor(col=1,alpha.f = .4))
+lines(grid,m, col="blue", lwd=5)  # add something else on top of existing graph
+```
+
+- by means of the fData class in the `roahd` package
+```{r}
+f_data <- fData(grid, data)
+plot(f_data) # what happens if I do plot(data)?
+lines(grid,m, col="black", lwd=5)
+```
+
+
+
+# 2. Functional depths
+```{r}
+data("mfD_healthy") # included in roahd
+
+univariate_fdata <- mfD_healthy$fDList[[1]] # I consider the first lead only
+plot(univariate_fdata)
+```
+
+### Band Depth measures
+Let's define functional depth measures (for univariate functional data):
+
+- the first step is to define the RANDOM BAND DEPTH of order $J>1$
+$$
+BD^J_{P_X}(f) = \sum_{j=2}^J P_X\{G(f) \subset B(X_1,\dots,X_j)\}
+$$
+where $G(f)$ indicates the graph of the function $f$ and $B(X_1,\dots,X_j)$ the random band in $\mathbb{R}^2$ delimited by the i.i.d. X_1,\dots,X_j, i.e.
+$$
+B(X_1,\dots,X_j) = \{(t,y(t)): t \in I, \min_{r=1,\dots,j}X_r(t) \leq y(t) \leq \max_{r=1,\dots,j}X_r(t) \}
+$$
+-  from these quantities functional depth measures are defined: 
+without giving the definition we can just say that the Band Depth measure in the proportion of bands determined by $J$ different curves containing the whole graph of $X$
+
+The modified band depth is a generalization that describes the proportion of time interval where the graph of $X$ belongs to the envelopes of the $j$-tuples $(x_{i1},\dots,x_{ij}), j=1,\dots,J$
+
+```{r}
+band_depth <- BD(Data = univariate_fdata)
+band_depth
+```
+One value for each curve
+```{r}
+modified_band_depth <- MBD(Data = univariate_fdata)
+modified_band_depth 
+```
+By these measures we can compute the median
+```{r}
+median_curve <- median_fData(fData = univariate_fdata, type = "MBD")
+
+plot(univariate_fdata)
+plot(median_curve, add=T, lwd=2, col="black")
+```
+
+Manually
+```{r}
+median_curve_manual <- univariate_fdata[which.max(modified_band_depth),] 
+```
+
+
+### Epigraph & Hypograph index
+*Intuition on the functioning of functional depth measures:*
+The ordering for functional is based on a down-upward order (unlike in multivariate depth measures, where it was based on a center-outward order). There exist proper indexes to measure their "highness" and their "lowness"
+
+These are
+- (Modified) Hypograph Index (MHI): amount of time spent by the curves of the sample BELOW a given curve
+$$
+MHI(f) = \frac{1}{N} \sum_{i=1}^N \tilde{\lambda}(\{t \in I: f_i(t) \leq f(t)\})
+$$
+- (Modified) Epigraph Index (MEI): amount of time spent by the curves of the sample ABOVE a given curve
+$$
+MEI(f) = \frac{1}{N} \sum_{i=1}^N \tilde{\lambda}(\{t \in I: f_i(t) \geq f(t)\})
+$$
+
+These quantities are related to the MBD by the following relation
+$$
+MBD(f) \leq a_0 + a_1MEI(f) + a_2N^2MEI^2(f)
+$$
+with $a_0=a_2=\frac{-2}{N(N-1)}, a_1 = \frac{2(n+1)}{n-1}$
+
+# 3. Spearman's correlation index
+Grades for a stochastic process: let $X_t$ be a stochastic process with sample paths in $C(I)$, with $I \subset \mathbb{R}$ compact. The Inferior and Superior Length grade of $X_t$ are defined as
+$$
+IL_\text{grade}(X_t) = \frac{1}{\lambda(I)}\mathbb{E}_{Z_t}[\lambda\{t \in I: X_t \geq Z_t\}] \\
+SL_\text{grade}(X_t) = \frac{1}{\lambda(I)}\mathbb{E}_{Z_t}[\lambda\{t \in I: X_t \leq Z_t\}]
+$$
+where $Z_t$ is a stochastic process with the same distribution of $X_t$ and $\lambda$ is the Lebesgue measure on $\mathbb{R}$
+
+
+Given those quantities the Spearman correlation index, given two stochastic processes, is defined as 
+$$
+\rho_s(X_t,Y_t) = \rho_p(IL_\text{grade}(X_t),IL_\text{grade}(Y_t))
+$$
+where $\rho_p$ is the usual Pearson coefficient for multivariate correlation
+
+*Interpretation of the Spearman correlation index*
+- the spearman index quantifies with a value in $[-1,1]$ the tendency of $X_t$ and $Y_t$ to be perfect monotone functions one on each other
+
+- the Spearman index is 0 when two processes are stochastically independent
+
+*Relationship between IL-grade,SL-grade and MHI,MEI*
+$$
+IL_\text{grade} = \frac{MHI}{\lambda(I)} \\
+SL_\text{grade} = \frac{MEI}{\lambda(I)}
+$$
+
+```{r}
+bivariate_data <- as.mfData(list(mfD_healthy$fDList[[1]], mfD_healthy$fDList[[2]]))
+plot(bivariate_data)
+```
+
+```{r}
+cor_spearman(bivariate_data, ordering='MHI')
+```
+
+```{r}
+MHI_first_lead <- MHI(bivariate_data$fDList[[1]]) # modified hypograph
+MHI_second_lead <- MHI(bivariate_data$fDList[[2]])
+
+cor(MHI_first_lead, MHI_second_lead)
+```
+
+# 4. Functional boxplot and outliergram
+```{r}
+n = 100
+alpha <-  0.2
+beta <-  0.002
+
+grid = seq(0,1,length.out=1000)
+
+m <- sin(pi*grid)+sin(2*pi*grid)
+C_st <- exp_cov_function(grid, alpha, beta )
+
+data <- generate_gauss_fdata(N = n,centerline = m,Cov=C_st)
+f_data <- fData(grid,data)
+```
+
+## Magnitude outliers
+```{r}
+set.seed(33) # reproducibility
+outlier_share <- .1
+n_outliers <-   n*outlier_share
+out_highlighter <- rep(c(1,2),c(n-n_outliers,n_outliers))
+f_data_temp <- f_data[1:(n*(1-outlier_share)) ,] # Coding tip: subsetting is mabe possible by the S3 class fdata
+mag_temp <- f_data[(n*(1-outlier_share)+1):n,] * runif(10,2,3)
+
+f_data_mag <- append_fData(f_data_temp,mag_temp)
+plot(f_data_mag, col=out_highlighter)
+```
+
+Well-detected by a functional boxplot:
+
+
+- The central region (“functional bag”) contains the functions with the highest MBD value
+- The central region is inflated by factor F(this value may be tuned using more refined algorithms) to obtain the fences.
+
+```{r}
+invisible(fbplot(f_data_mag, main="Magnitude outliers"))
+```
+
+## Shape outliers
+```{r}
+shift_q <- .5
+
+mu_warp=mu=sin(pi*grid+shift_q)+sin(2*pi*grid+shift_q)
+
+shape_temp=generate_gauss_fdata(N = n_outliers, mu_warp, Cov=C_st)
+shape_temp=fData(grid,shape_temp)
+f_data_shape=append_fData(f_data_temp,shape_temp) 
+plot(f_data_shape, col=out_highlighter)
+```
+
+```{r}
+out_shape <- outliergram(f_data_shape, display = T)
+out_shape$ID_outliers
+```
+May be hard-coded
+```{r}
+MEI_out_shape <- MEI(f_data_shape)
+MBD_out_shape <- MBD(f_data_shape)
+a_0 <- a_2 <- -2/(f_data_shape$N*(f_data_shape$N-1))
+a_1 <- 2*(f_data_shape$N+1)/(f_data_shape$N-1)
+d_manual <- a_0+a_1*MEI_out_shape+a_2*f_data_shape$N^2*MEI_out_shape^2-MBD_out_shape
+
+critical.quantile = quantile(d_manual,probs = .75)
+inflation =out_shape$Fvalue
+inter.q.range = IQR(x = d_manual)
+
+ID_outliers_manual <- which(d_manual > critical.quantile + inflation *inter.q.range )
+
+plot(MEI_out_shape, MBD_out_shape)
+points(MEI_out_shape[ID_outliers_manual], MBD_out_shape[ID_outliers_manual], pch = 16, col = "red")
+```
+

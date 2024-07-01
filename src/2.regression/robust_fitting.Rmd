@@ -1,0 +1,368 @@
+---
+title: "Robust regression"
+---
+
+## Importing data
+```{r warning=FALSE}
+# General utilies
+library(readr)
+library(dplyr)
+library(purrr)
+library(tidyverse)
+
+# Compositions data
+library(compositions)
+library(ggtern)
+
+# Robust fitting
+library(robustbase)
+
+# Visualization 
+library(urbnmapr)
+```
+
+Counties data
+```{r}
+root = "../.."
+source(paste(root,"include/utils.R",sep = "/"))
+
+context.data <- read_csv(paste(root, "data/clean_merged_data.csv", sep="/"))
+context.data$...1 <- NULL
+
+context.data <- 
+  context.data %>% 
+  left_join(data.frame(state_name=c(state.name,"District of Columbia"), 
+                       state_abb=c(state.abb,"DC")), by = "state_name")
+```
+
+## Fit 
+### Target
+Not considering the votes for other parties, considering them as non-voters
+```{r}
+context.data$total_votes12 <- with(context.data, (1-others_pct12)*total_votes12)
+context.data$total_votes16 <- with(context.data, (1-others_pct16)*total_votes16)
+context.data$total_votes20 <- with(context.data, (1-others_pct20)*total_votes20)
+```
+
+Weighting the electoral results for which we have data through pca
+```{r}
+eletoral_results.per_year <- list()
+
+eletoral_results.per_year$ilr.res_12 <- ilr(acomp(context.data,
+                                                  parts = c("gop_pct12","dem_pct12"))
+                                            )
+
+eletoral_results.per_year$ilr.res_16 <- ilr(acomp(context.data,
+                                                  parts = c("gop_pct16","dem_pct16"))
+                                            )
+
+eletoral_results.per_year$ilr.res_20 <- ilr(acomp(context.data,
+                                                  parts = c("gop_pct20","dem_pct20"))
+                                            )
+
+eletoral_results.per_year <- as.data.frame(eletoral_results.per_year)
+
+#covariance structure
+cov(eletoral_results.per_year)
+
+#pca
+eletoral_results.pca <- princomp(eletoral_results.per_year)
+summary(eletoral_results.pca)
+
+#loadings
+eletoral_results.pca$loadings
+```
+
+Building the target
+```{r}
+context.data$w.gop_pct <- (as.matrix(context.data[,c("gop_pct12","gop_pct16","gop_pct20")]) %*% eletoral_results.pca$loadings[,1]) /sum(eletoral_results.pca$loadings[,1])
+
+context.data$w.dem_pct <- (as.matrix(context.data[,c("dem_pct12","dem_pct16","dem_pct20")]) %*% eletoral_results.pca$loadings[,1]) / sum(eletoral_results.pca$loadings[,1])
+
+context.data$w.total_votes <-
+  (as.matrix(context.data[,c("total_votes12","total_votes16","total_votes20")]) %*% eletoral_results.pca$loadings[,1]) / sum(eletoral_results.pca$loadings[,1])
+```
+
+### Weights
+#### Electoral weight
+Computing the weight of each county in the final prediction as 
+$$
+w_i = \frac{n_i}{N_{S_i}} b_{\text{electors},S_i}
+$$
+where $i \in C$: county, $\frac{n_i}{N_{S_i}}$: percentage of state population in the county, $b_{\text{electors},S_i}$: number of big electors associated to each state
+
+```{r}
+electoral_votes <- 
+  data.frame(
+    big_electors = c(AL = 9, AK = 3, AZ = 11, AR = 6, CA = 55, CO = 10, CT = 7, DC = 3, DE = 3, FL = 30, GA = 16, HI = 4, ID = 4, IL = 19,IN = 11, IA = 6, KS = 6, KY = 8, LA = 8, ME = 4, MD = 10, MA = 11, MI = 15, MN = 10, MS = 6, MO = 10, MT = 4, NE = 5, NV = 6, NH = 4, NJ = 14, NM = 5, NY = 28, NC = 16, ND = 3, OH = 17, OK = 7, OR = 8, PA = 19, RI = 4, SC = 9, SD = 3, TN = 11, TX = 40, UT = 6, VT = 3, VA = 13, WA = 12, WV = 4, WI = 10, WY = 3))
+
+electoral_votes$state_abb <- row.names(electoral_votes)
+```
+
+Actual computation of the weights + visualization of the distribution (few counties weights lots more than the others)
+```{r}
+state_population <- context.data %>%
+  group_by(state_abb) %>%
+  summarize(state_total_population = sum(POPULATION))
+
+context.data <- context.data %>%
+  left_join(state_population, by = "state_abb") %>%
+  left_join(electoral_votes, by = "state_abb") %>%
+  mutate(county.w = (POPULATION / state_total_population)*big_electors)
+
+boxplot(context.data$county.w)
+plot(cumsum(sort(context.data$county.w/sum(context.data$county.w))), type="l")
+```
+
+```{r}
+usa_map.plt.data <- left_join(context.data, counties, by = "county_fips") 
+
+print(
+    usa_map.plt.data %>%
+      subset(county.w/mean(county.w) <= 50) %>%
+      ggplot(aes(long, lat, group = group, fill = county.w/mean(county.w))) +
+      geom_polygon(color = NA) +
+      coord_map(projection = "mercator") +
+      labs(fill = "population") +
+      scale_fill_gradient2(low = "white", high = "green")
+)
+```
+
+### Actual fit
+
+```{r}
+robust.glm.fit <- glmrob(
+  cbind(I(ceiling(w.total_votes*w.gop_pct/(w.gop_pct+w.dem_pct))),
+        I(floor(w.total_votes*w.dem_pct/(w.gop_pct+w.dem_pct)))) ~ 
+    median_hh_inc +
+    clf_unemploy_pct +
+    ilr(acomp(cbind(white_pct,black_pct,hispanic_pct))) +
+    ilr(acomp(cbind(age29andunder_pct,age30to64,age65andolder_pct))) +
+    ilr(acomp(cbind(lesshs_pct,onlyhs_pct,morecollege_pct))),
+  family = binomial,
+  method = "Mqle",
+  control = glmrobMqle.control(maxit=500),
+  data = context.data)
+
+summary(robust.glm.fit)
+```
+
+
+### Interpretations
+#### Ethnical composition
+```{r}
+ethnical_coef.ind <- 4:5
+
+ethnical_composit <- acomp(context.data, 
+                           parts=c("white_pct", "black_pct", "hispanic_pct"))
+
+ethnical_coef <- ilrInv(coef(robust.glm.fit)[ethnical_coef.ind], orig=ethnical_composit)
+
+ethnical_coef.variance <- ilrvar2clr(vcov(robust.glm.fit)[ethnical_coef.ind,ethnical_coef.ind])
+
+par(mar=c(3,3,0,1))
+
+scaleB = 1
+plot(scaleB*ethnical_coef)
+plot(0*ethnical_coef,add=TRUE,pch=20)
+alpha = 0.05
+rF = sqrt(qf(1-alpha,nrow(ethnical_coef.variance)-1,3000)) 
+ellipses(scaleB*ethnical_coef,scaleB^2*ethnical_coef.variance, rF)
+```
+
+```{r}
+color_palette <- colorRampPalette(c("blue", "white","red"))
+
+# Generate colors based on the values of z
+colors <- with(context.data, 
+               color_palette(dim(context.data)[1])[cut(w.gop_pct/(w.gop_pct+w.dem_pct), 
+                                                       breaks = dim(context.data)[1])]
+)
+
+png(filename = "plots/robust_ethn_effect.png",
+     width = 800, height = 800, units = "px")
+
+plot(ethnical_composit, 
+     col = colors,
+     pch=20, cex = 0.1,
+     plotMissings=F,
+     axes=T, labels= c("white","black","hispanic")) 
+
+scaleB = 1
+
+plot(mean(ethnical_composit) + scaleB*ethnical_coef, add = T, pch = 20, col="red")
+plot(mean(ethnical_composit), add=TRUE,pch=20)
+
+segments.acomp(mean(ethnical_composit), mean(ethnical_composit) + scaleB*ethnical_coef)
+#straight(0*age_coef, age_coef, lwd=1, lty=2)
+
+straight(mean(ethnical_composit), ethnical_coef, lwd=1, lty=2)
+
+dev.off()
+
+```
+
+
+
+```{r}
+plot(ethnical_composit, col=ifelse(context.data$gop_pct20 > context.data$dem_pct20, "red","blue"))
+straight(mean(ethnical_composit), ethnical_coef, lwd=2)
+```
+
+
+#### Age composition
+```{r}
+age_coef.ind <- 6:7
+
+age_composit <- acomp(context.data, 
+                  parts = c("age29andunder_pct", "age30to64", "age65andolder_pct")
+                  )
+
+age_coef <- ilrInv(coef(robust.glm.fit)[age_coef.ind], orig=age_composit)
+
+age_coef.variance <- ilrvar2clr(vcov(robust.glm.fit)[age_coef.ind,age_coef.ind])
+
+par(mar=c(3,3,0,1))
+
+scaleB = 1
+plot(scaleB*age_coef)
+plot(0*age_coef, add=TRUE, pch=20)
+alpha = 0.05
+rF = sqrt(qf(1-alpha,nrow(age_coef.variance)-1,3000)) 
+ellipses(scaleB*age_coef,scaleB^2*age_coef.variance, rF)
+```
+
+```{r}
+color_palette <- colorRampPalette(c("blue", "white","red"))
+
+# Generate colors based on the values of z
+colors <- with(context.data, 
+               color_palette(dim(context.data)[1])[cut(w.gop_pct/(w.gop_pct+w.dem_pct), 
+                                                       breaks = dim(context.data)[1])]
+)
+
+png(filename = "plots/robust_age_effect.png",
+     width = 800, height = 800, units = "px")
+
+plot(age_composit, 
+     col = colors,
+     pch=20, cex = 0.1,
+     plotMissings=F,
+     axes=T, labels=c("under30","30to64","over64")) 
+
+scaleB = 1
+plot(mean(age_composit) + scaleB*age_coef, add = T, pch = 20, col="red")
+
+plot(mean(age_composit), add=TRUE,pch=20)
+
+segments.acomp(mean(age_composit), mean(age_composit) + scaleB*age_coef)
+#straight(0*age_coef, age_coef, lwd=1, lty=2)
+
+straight(mean(age_composit), age_coef, lwd=1, lty=2)
+
+dev.off()
+```
+
+
+
+```{r}
+# building a grid for the predictors
+under30.grid <- seq(min(age_composit[,1]),max(age_composit[,1]),length.out=200)
+age30to64.grid <- seq(min(age_composit[,2]),max(age_composit[,2]),length.out=200)
+
+predictors.grid <- expand.grid(age29andunder_pct=under30.grid, age30to64=age30to64.grid) 
+predictors.grid$age65andolder_pct <- 
+  1-predictors.grid$age29andunder_pct-predictors.grid$age30to64
+
+predictors.grid <- subset(predictors.grid, age65andolder_pct >= 0)
+
+# map the grid to the space of compositions
+transformed.grid <- as.data.frame(ilr(acomp(predictors.grid,
+                                            parts = c("age29andunder_pct", "age30to64", "age65andolder_pct"))))
+names(transformed.grid) <- names(coef(robust.glm.fit)[age_coef.ind])
+
+# compute the predictions
+predictions.linear <- (as.matrix(transformed.grid) -colMeans(as.matrix(transformed.grid)))%*% coef(robust.glm.fit)[age_coef.ind]
+```
+
+
+```{r}
+# Point-wise estimate
+ggtern(data = predictors.grid, aes(age29andunder_pct, age30to64, age65andolder_pct)) +
+  geom_point(size=0.2, aes(color=predictions.linear)) +
+  scale_color_gradient2(low = "blue", mid="white",high = "red") +
+  geom_point(data = age_composit, aes(age29andunder_pct, age30to64, age65andolder_pct),
+             size = 0.01)
+```
+
+#### Educational compositions
+```{r}
+edu_coef.ind <- 8:9
+
+edu_composit <- acomp(context.data, 
+                   parts = c("lesshs_pct", "onlyhs_pct", "morecollege_pct"))
+
+edu_coef <- ilrInv(coef(robust.glm.fit)[edu_coef.ind], orig=edu_composit)
+
+edu_coef.variance <- ilrvar2clr(vcov(robust.glm.fit)[edu_coef.ind,edu_coef.ind])
+
+par(mar=c(3,3,0,1))
+
+scaleB = 1
+plot(scaleB*edu_coef)
+plot(0*edu_coef, add=TRUE, pch=20)
+alpha = 0.05
+rF = sqrt(qf(1-alpha,nrow(edu_coef.variance)-1,3000)) 
+ellipses(scaleB*edu_coef,scaleB^2*edu_coef.variance, rF)
+```
+
+```{r}
+color_palette <- colorRampPalette(c("blue", "white","red"))
+
+# Generate colors based on the values of z
+colors <- with(context.data, 
+               color_palette(dim(context.data)[1])[cut(w.gop_pct/(w.gop_pct+w.dem_pct), 
+                                                       breaks = dim(context.data)[1])]
+)
+
+png(filename = "plots/robust_edu_effect.png",
+     width = 800, height = 800, units = "px")
+
+plot(edu_composit, 
+     col = colors,
+     pch=20, cex = 0.1,
+     plotMissings=F,
+     axes=T, labels=c("less_hs","only_hs","more_hs")) 
+
+scaleB = 1
+
+plot(mean(edu_composit) + scaleB*edu_coef, add = T, pch = 20, col="red")
+plot(mean(edu_composit), add=TRUE,pch=20)
+
+segments.acomp(mean(edu_composit), mean(edu_composit) + scaleB*edu_coef)
+#straight(0*age_coef, age_coef, lwd=1, lty=2)
+
+straight(mean(edu_composit), edu_coef, lwd=1, lty=2)
+
+dev.off()
+```
+
+
+### Diagnostic
+```{r}
+fit.MCD <- covMcd(x = as.matrix(robust.glm.fit$model), 
+                  alpha = 0.75)
+
+robust.dist <- mahalanobis(as.matrix(robust.glm.fit$model),fit.MCD$center,fit.MCD$cov)
+
+
+plot(robust.dist, residuals(robust.glm.fit), 
+     col=ifelse(context.data$gop_pct20 > context.data$dem_pct20, "red","blue"))
+```
+
+```{r}
+preds <- predict(robust.glm.fit, type = "response")
+
+with(context.data, plot(preds, w.gop_pct/(w.gop_pct+w.dem_pct)))
+```
+

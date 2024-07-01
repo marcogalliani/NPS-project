@@ -1,0 +1,543 @@
+---
+title: "Depth Measures"
+---
+
+Loading the data
+```{r}
+root = "../.."
+source(paste(root,"include/utils.R",sep = "/"))
+
+library(readr)
+clean_data <- read_csv(paste(root, "data/clean_merged_data.csv", sep="/"))
+```
+## Depth computation
+```{r}
+## depth analysis
+library(MASS)
+library(rgl)
+library(DepthProc)
+library(hexbin)
+library(aplpack)
+library(robustbase)
+library(MDBED)  # plot exponential bivariate distribution
+
+## Compositional analysis
+library(compositions)
+library(ggtern)
+
+## Plotting
+library(tidyverse)
+library(urbnmapr)
+library(RColorBrewer)
+```
+
+
+## Compositions
+For ceratin variables we have to take into account the compositional structure of the data
+
+```{r}
+extract_depth_composition <- function(composition, county_fips){
+  mapped_composition <- ilr(composition)
+  
+  depth_data <- list()
+  
+  depth_data$county_fips <- county_fips
+  depth_data$tukey_depth <- depth(u=as.data.frame(mapped_composition), 
+                                  method='Tukey')@.Data
+  
+  depth_data <- as.data.frame(depth_data)
+  
+  considered_counties <- counties[!counties$state_name=="Alaska", ]
+  household_data <- left_join(depth_data, considered_counties, by = "county_fips") 
+  
+  return_struct <- list()
+  return_struct$mapped_composition <- mapped_composition
+  return_struct$tukey_depth <- depth_data$tukey_depth
+  return_struct$plotting_data <- household_data
+  
+  return(return_struct)
+}
+```
+
+
+### Age composition
+```{r}
+age_composit <- acomp(clean_data, parts=c("age29andunder_pct", "age30to64", "age65andolder_pct"))
+
+depth_age <- extract_depth_composition(age_composit, clean_data$county_fips)
+```
+
+Plotting
+```{r}
+## PLOTS
+#(1) tern plot of the data in the original space
+ggtern(age_composit, aes(age29andunder_pct, age30to64, age65andolder_pct)) +
+  geom_hex_tern(
+    fun = function(z){ sum(z)/dim(age_composit)[1]}
+  )
+
+#(2) scatterplot in the mapped space
+plot(depth_age$mapped_composition)
+
+#(3) depth contour plot in the mapped space
+print(depthContour(as.data.frame(depth_age$mapped_composition), 
+           depth_params = list(method='Tukey'),
+           points = F)
+)
+
+#(4) bagplot of the data in the mapped space
+bagplot(depth_age$mapped_composition, factor = 3, show.whiskers = T)
+
+
+#(5) plot of the depth values on the counties map 
+# (to see any possible spatial relationship)
+print(
+  depth_age$plotting_data %>%
+    ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+)
+
+#(6) plot of the depth in the original tern space
+ggtern(age_composit, 
+       aes(age29andunder_pct, age30to64, age65andolder_pct, 
+           color = depth_age$tukey_depth)) +
+  geom_point()
+```
+
+
+### Electoral results composition
+```{r}
+elect_composit <- list()
+
+elect_composit[["2020"]] <- acomp(clean_data, c("gop_pct20", "dem_pct20", "others_pct20"))
+elect_composit[["2016"]] <- acomp(clean_data, c("gop_pct16", "dem_pct16", "others_pct16"))
+elect_composit[["2012"]] <- acomp(clean_data, c("gop_pct12", "dem_pct12", "others_pct12"))
+```
+
+Depth analysis of the compositions
+```{r}
+depth_elections <- list()
+
+depth_elections[["2020"]] <- extract_depth_composition(elect_composit[["2020"]],
+                                                       clean_data$county_fips)
+depth_elections[["2016"]] <- extract_depth_composition(elect_composit[["2016"]],
+                                                       clean_data$county_fips)
+depth_elections[["2012"]] <- extract_depth_composition(elect_composit[["2012"]],
+                                                       clean_data$county_fips)
+```
+
+
+Plotting 
+
+2020
+```{r}
+## PLOTS
+year = "2020"
+
+#(1) tern plot of the data in the original space
+ggtern(elect_composit[[year]], 
+       aes(gop_pct20, dem_pct20, others_pct20)) +
+  geom_hex_tern(
+    fun = function(z){ sum(z)/dim(elect_composit[[year]])[1]}
+  )
+
+#(2) scatterplot in the mapped space
+plot(depth_elections[[year]]$mapped_composition)
+
+#(3) depth contour plot in the mapped space
+print(depthContour(as.data.frame(depth_elections[[year]]$mapped_composition), 
+           depth_params = list(method='Tukey'),
+           points = F)
+)
+
+#(4) bagplot of the data in the mapped space
+bagplot(depth_elections[[year]]$mapped_composition, factor = 3, show.whiskers = T)
+
+
+#(5) plot of the depth values on the counties map 
+# (to see any possible spatial relationship)
+print(
+  depth_elections[[year]]$plotting_data %>%
+    ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+)
+
+#(6) plot of the depth in the original tern space
+ggtern(elect_composit[[year]], 
+       aes(gop_pct20, dem_pct20, others_pct20, 
+           color = depth_elections[[year]]$tukey_depth)) +
+  geom_point()
+```
+
+2016
+```{r}
+## PLOTS
+year = "2016"
+
+#(1) tern plot of the data in the original space
+ggtern(elect_composit[[year]], 
+       aes(gop_pct16, dem_pct16, others_pct16)) +
+  geom_hex_tern(
+    fun = function(z){ sum(z)/dim(elect_composit[[year]])[1]}
+  )
+
+#(2) scatterplot in the mapped space
+plot(depth_elections[[year]]$mapped_composition)
+
+#(3) depth contour plot in the mapped space
+print(depthContour(as.data.frame(depth_elections[[year]]$mapped_composition), 
+           depth_params = list(method='Tukey'),
+           points = F)
+)
+
+#(4) bagplot of the data in the mapped space
+bagplot(depth_elections[[year]]$mapped_composition, factor = 3, show.whiskers = T)
+
+
+#(5) plot of the depth values on the counties map 
+# (to see any possible spatial relationship)
+print(
+  depth_elections[[year]]$plotting_data %>%
+    ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+)
+
+#(6) plot of the depth in the original tern space
+ggtern(elect_composit[[year]], 
+       aes(gop_pct16, dem_pct16, others_pct16, 
+           color = depth_elections[[year]]$tukey_depth)) +
+  geom_point()
+```
+
+2012
+```{r}
+## PLOTS
+year = "2012"
+
+#(1) tern plot of the data in the original space
+ggtern(elect_composit[[year]], 
+       aes(gop_pct12, dem_pct12, others_pct12)) +
+  geom_hex_tern(
+    fun = function(z){ sum(z)/dim(elect_composit[[year]])[1]}
+  )
+
+#(2) scatterplot in the mapped space
+plot(depth_elections[[year]]$mapped_composition)
+
+#(3) depth contour plot in the mapped space
+print(depthContour(as.data.frame(depth_elections[[year]]$mapped_composition), 
+           depth_params = list(method='Tukey'),
+           points = F)
+)
+
+#(4) bagplot of the data in the mapped space
+bagplot(depth_elections[[year]]$mapped_composition, factor = 3, show.whiskers = T)
+
+
+#(5) plot of the depth values on the counties map 
+# (to see any possible spatial relationship)
+print(
+  depth_elections[[year]]$plotting_data %>%
+    ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+)
+
+#(6) plot of the depth in the original tern space
+ggtern(elect_composit[[year]], 
+       aes(gop_pct12, dem_pct12, others_pct12, 
+           color = depth_elections[[year]]$tukey_depth)) +
+  geom_point()
+```
+
+### Gender composition
+```{r}
+gender_composit <- acomp(clean_data, parts=c("female_pct", "male_pct"))
+
+depth_gender <- extract_depth_composition(gender_composit, clean_data$county_fips)
+```
+
+Plotting
+```{r}
+#(5) plot of the depth values on the counties map 
+# (to see any possible spatial relationship)
+print(
+  depth_gender$plotting_data %>%
+    ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+)
+```
+
+### Ethnic composition
+```{r}
+ethnic_composit <- acomp(clean_data, parts=c("white_pct", "black_pct", "hispanic_pct", "otherrace_pct"))
+
+depth_ethinicity <- extract_depth_composition(ethnic_composit, clean_data$county_fips)
+```
+
+
+Plotting
+```{r}
+#(5) plot of the depth values on the counties map 
+# (to see any possible spatial relationship)
+print(
+  depth_ethinicity$plotting_data %>%
+    ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+)
+```
+
+### Educational composition
+```{r}
+edu_composit <- acomp(clean_data, 
+                      parts = c("lesshs_pct", "onlyhs_pct", "morecollege_pct"))
+
+depth_edu <- extract_depth_composition(edu_composit, clean_data$county_fips)
+```
+
+Plotting
+```{r}
+#(1) tern plot of the data in the original space
+ggtern(edu_composit, 
+       aes(lesshs_pct, onlyhs_pct, morecollege_pct)) +
+  geom_hex_tern(
+    fun = function(z){ sum(z)/dim(edu_composit)[1]}
+  )
+
+#(2) scatterplot in the mapped space
+plot(depth_edu$mapped_composition)
+
+#(3) depth contour plot in the mapped space
+print(depthContour(as.data.frame(depth_edu$mapped_composition), 
+           depth_params = list(method='Tukey'),
+           points = F)
+)
+
+#(4) bagplot of the data in the mapped space
+bagplot(depth_edu$mapped_composition, factor = 3, show.whiskers = T)
+
+
+#(5) plot of the depth values on the counties map 
+# (to see any possible spatial relationship)
+print(
+  depth_edu$plotting_data %>%
+    ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+)
+
+#(6) plot of the depth in the original tern space
+ggtern(edu_composit, 
+       aes(lesshs_pct, onlyhs_pct, morecollege_pct, 
+           color = depth_edu$tukey_depth)) +
+  geom_point()
+```
+
+## For the report
+
+Density
+```{r}
+# Ethnical composition
+ethnic.density <- ggtern( acomp(clean_data, parts=c("white_pct", "black_pct", "hispanic_pct")), 
+       aes(white_pct, black_pct, hispanic_pct)) +
+  geom_hex_tern(
+    fun = function(z){ sum(z)/dim(ethnic_composit)[1]}
+  ) +
+  labs(
+    T = "Black",
+    L = "White",
+    R = "Hispanic",
+    fill = "density"
+  ) +
+  theme(
+    tern.axis.title.T = element_text(size = 10),  
+    tern.axis.title.L = element_text(size = 10), 
+    tern.axis.title.R = element_text(size = 10)  
+  )
+ggsave(filename = "plots/ethn_comp_density.png", plot = ethnic.density,
+       width = 7, height = 5)
+
+# Age composition
+age.density <- ggtern(age_composit, 
+       aes(age29andunder_pct, age30to64, age65andolder_pct)) +
+  geom_hex_tern(
+    fun = function(z){ sum(z)/dim(age_composit)[1]}
+  ) +
+  labs(
+    T = "30to64",
+    L = "under30",
+    R = "over64",
+    fill = "density"
+  ) +
+  theme(
+    tern.axis.title.T = element_text(size = 10),  
+    tern.axis.title.L = element_text(size = 10), 
+    tern.axis.title.R = element_text(size = 10)  
+  )
+ggsave(filename = "plots/age_comp_density.png", plot = age.density,
+       width = 7, height = 5)
+
+# Educational composition
+edu.density <- ggtern(edu_composit, 
+       aes(lesshs_pct, onlyhs_pct, morecollege_pct)) +
+  geom_hex_tern(
+    fun = function(z){ sum(z)/dim(edu_composit)[1]}
+  ) +
+  labs(
+    T = "hs",
+    L = "lees_hs",
+    R = "more_hs",
+    color = "depth"
+  ) +
+  theme(
+    tern.axis.title.T = element_text(size = 10),  
+    tern.axis.title.L = element_text(size = 10), 
+    tern.axis.title.R = element_text(size = 10)  
+  )
+ggsave(filename = "plots/edu_comp_density.png", plot = edu.density,
+       width = 7, height = 5)
+```
+
+
+Depth visualizations
+- Ethnicity
+```{r}
+ethnic_composit <- acomp(clean_data, parts=c("white_pct", "black_pct", "hispanic_pct"))
+
+depth_ethinicity <- extract_depth_composition(ethnic_composit, clean_data$county_fips)
+
+## Bagplot
+png(filename = "plots/ethn_bagplot.png",
+     width = 800, height = 800, units = "px")
+bagplot(depth_ethinicity$mapped_composition, factor = 3, show.whiskers = T)
+dev.off()
+
+## Tern depth plot
+tern_depth.ethnicity <- ggtern(ethnic_composit,
+                               aes(white_pct, black_pct, hispanic_pct,
+                                   color = depth_ethinicity$tukey_depth)) +
+  geom_point() +
+  labs(
+    T = "Black",
+    L = "White",
+    R = "Hispanic",
+    color = "depth"
+  ) +
+  theme(
+    tern.axis.title.T = element_text(size = 10),  
+    tern.axis.title.L = element_text(size = 10), 
+    tern.axis.title.R = element_text(size = 10)  
+  )
+
+ggsave(filename = "plots/ethn_depth_tern.png", plot = tern_depth.ethnicity,
+       width = 7, height = 5)
+
+## Depth map
+depth_map.ethnicity <- depth_ethinicity$plotting_data %>%
+  ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+
+ggsave(filename = "plots/ethn_depth_map.png", plot = depth_map.ethnicity,
+       width = 9, height = 5)
+```
+
+- Age
+```{r}
+age_composit <- acomp(clean_data, parts=c("age29andunder_pct", "age30to64", "age65andolder_pct"))
+depth_age <- extract_depth_composition(age_composit, clean_data$county_fips)
+
+## Bagplot
+png(filename = "plots/age_bagplot.png",
+     width = 800, height = 600, units = "px")
+bagplot(depth_age$mapped_composition, factor = 3, show.whiskers = T)
+dev.off()
+
+## Tern depth plot
+tern_depth.age <- ggtern(age_composit,
+                         aes(age29andunder_pct, age30to64, age65andolder_pct,
+                             color = depth_age$tukey_depth)) +
+  geom_point() +
+  labs(
+    T = "30to64",
+    L = "under30",
+    R = "over64",
+    color = "depth"
+  ) +
+  theme(
+    tern.axis.title.T = element_text(size = 10),  
+    tern.axis.title.L = element_text(size = 10), 
+    tern.axis.title.R = element_text(size = 10)  
+  )
+
+ggsave(filename = "plots/age_depth_tern.png", plot = tern_depth.age,
+       width = 7, height = 5)
+
+## Depth map
+depth_map.age <- depth_age$plotting_data %>%
+  ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+
+ggsave(filename = "plots/age_depth_map.png", plot = depth_map.age,
+       width = 9, height = 5)
+```
+
+- Education
+```{r}
+edu_composit <- acomp(clean_data, 
+                      parts = c("lesshs_pct", "onlyhs_pct", "morecollege_pct"))
+
+depth_edu <- extract_depth_composition(edu_composit, clean_data$county_fips)
+
+## Bagplot
+png(filename = "plots/edu_bagplot.png",
+     width = 800, height = 600, units = "px")
+bagplot(depth_edu$mapped_composition, factor = 3, show.whiskers = T)
+dev.off()
+
+## Tern depth plot
+tern_depth.edu <- ggtern(edu_composit,
+                         aes(lesshs_pct, onlyhs_pct, morecollege_pct,
+                             color = depth_edu$tukey_depth)) +
+  geom_point() +
+  labs(
+    T = "hs",
+    L = "lees_hs",
+    R = "more_hs",
+    color = "depth"
+  ) +
+  theme(
+    tern.axis.title.T = element_text(size = 10),  
+    tern.axis.title.L = element_text(size = 10), 
+    tern.axis.title.R = element_text(size = 10)  
+  )
+
+ggsave(filename = "plots/edu_depth_tern.png", plot = tern_depth.edu,
+       width = 7, height = 5)
+
+## Depth map
+depth_map.edu <- depth_edu$plotting_data %>%
+  ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+
+ggsave(filename = "plots/edu_depth_map.png", plot = depth_map.edu,
+       width = 9, height = 5)
+```
+
+```{r}
+depth_elections[["2020"]]$plotting_data %>%
+    ggplot(aes(long, lat, group = group, fill = tukey_depth)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "mercator")
+
+ggsave(filename = "plots/2020elections_depth_map.png",
+       width = 9, height = 5)
+```
+

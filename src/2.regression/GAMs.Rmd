@@ -1,0 +1,711 @@
+---
+title: "Regression on the counties majorities"
+---
+
+
+## Importing data
+```{r warning=FALSE}
+# General utilies
+library(readr)
+library(dplyr)
+library(purrr)
+library(pbapply)
+library(tidyverse)
+
+# Compositions data
+library(compositions)
+library(ggtern)
+
+# Multivariate depth measures
+library(DepthProc)
+
+# Conformal inference
+library(conformalInference)
+```
+
+
+Counties data
+```{r}
+root = "../.."
+source(paste(root,"include/utils.R",sep = "/"))
+
+context.data <- read_csv(paste(root, "data/clean_merged_data.csv", sep="/"))
+context.data$...1 <- NULL
+
+context.data <- 
+  context.data %>% 
+  left_join(data.frame(state_name=c(state.name,"District of Columbia"), 
+                       state_abb=c(state.abb,"DC")), by = "state_name")
+```
+
+
+## Fit 
+### Target
+Not considering the votes for other parties, considering them as non-voters
+```{r}
+context.data$total_votes12 <- with(context.data, (1-others_pct12)*total_votes12)
+context.data$total_votes16 <- with(context.data, (1-others_pct16)*total_votes16)
+context.data$total_votes20 <- with(context.data, (1-others_pct20)*total_votes20)
+```
+
+Weighting the electoral results for which we have data through pca
+```{r}
+eletoral_results.per_year <- list()
+
+eletoral_results.per_year$ilr.res_12 <- ilr(acomp(context.data,
+                                                  parts = c("gop_pct12","dem_pct12"))
+                                            )
+
+eletoral_results.per_year$ilr.res_16 <- ilr(acomp(context.data,
+                                                  parts = c("gop_pct16","dem_pct16"))
+                                            )
+
+eletoral_results.per_year$ilr.res_20 <- ilr(acomp(context.data,
+                                                  parts = c("gop_pct20","dem_pct20"))
+                                            )
+
+eletoral_results.per_year <- as.data.frame(eletoral_results.per_year)
+
+#covariance structure
+cov(eletoral_results.per_year)
+
+#pca
+eletoral_results.pca <- princomp(eletoral_results.per_year)
+summary(eletoral_results.pca)
+
+#loadings
+eletoral_results.pca$loadings
+```
+
+Building the target
+```{r}
+context.data$w.gop_pct <- (as.matrix(context.data[,c("gop_pct12","gop_pct16","gop_pct20")]) %*% eletoral_results.pca$loadings[,1]) /sum(eletoral_results.pca$loadings[,1])
+
+context.data$w.dem_pct <- (as.matrix(context.data[,c("dem_pct12","dem_pct16","dem_pct20")]) %*% eletoral_results.pca$loadings[,1]) / sum(eletoral_results.pca$loadings[,1])
+
+context.data$w.total_votes <-
+  (as.matrix(context.data[,c("total_votes12","total_votes16","total_votes20")]) %*% eletoral_results.pca$loadings[,1]) / sum(eletoral_results.pca$loadings[,1])
+```
+
+
+### Weights
+
+#### Electoral weight
+Computing the weight of each county in the final prediction as 
+$$
+w_i = \frac{n_i}{N_{S_i}} b_{\text{electors},S_i}
+$$
+where $i \in C$: county, $\frac{n_i}{N_{S_i}}$: percentage of state population in the county, $b_{\text{electors},S_i}$: number of big electors associated to each state
+
+```{r}
+electoral_results.state_level <- 
+  data.frame(
+    big_electors = c(AL = 9, AZ = 11, AR = 6, CA = 55, CO = 10, CT = 7, DC = 3, DE = 3, FL = 30, GA = 16, HI = 4, ID = 4, IL = 19,IN = 11, IA = 6, KS = 6, KY = 8, LA = 8, ME = 4, MD = 10, MA = 11, MI = 15, MN = 10, MS = 6, MO = 10, MT = 4, NE = 5, NV = 6, NH = 4, NJ = 14, NM = 5, NY = 28, NC = 16, ND = 3, OH = 17, OK = 7, OR = 8, PA = 19, RI = 4, SC = 9, SD = 3, TN = 11, TX = 40, UT = 6, VT = 3, VA = 13, WA = 12, WV = 4, WI = 10, WY = 3))
+
+electoral_results.state_level$state_abb <- row.names(electoral_results.state_level)
+```
+
+Actual computation of the weights + visualization of the distribution (few counties weights lot more than the others)
+
+```{r}
+context.data %>%
+  group_by(state_abb) %>%
+  summarize(w.total_votes = sum(w.total_votes)) %>%
+  dplyr::select(w.total_votes) %>%
+  unlist() -> electoral_results.state_level$state.total_votes
+
+context.data <- context.data %>%
+  left_join(electoral_results.state_level, by = "state_abb") %>%
+  mutate(county.w = (w.total_votes/state.total_votes)*big_electors)
+
+boxplot(context.data$county.w)
+plot(cumsum(sort(context.data$county.w/sum(context.data$county.w))), type="l")
+```
+
+```{r}
+library(tidyverse)
+library(urbnmapr)
+
+plot_data <- left_join(context.data, counties, by = "county_fips") 
+
+print(
+    plot_data %>%
+      subset(county.w <= max(county.w)) %>%
+      ggplot(aes(long, lat, group = group, fill = county.w)) +
+      geom_polygon(color = NA) +
+      coord_map(projection = "mercator") +
+      labs(fill = "population") +
+      scale_fill_gradient2(low = "white", high = "green")
+)
+```
+
+
+#### Spatial autocorrelation
+
+Removing non connected counties
+```{r}
+context.usa48.data <- subset(context.data, !state_name %in% c("Hawaii","District of Columbia"))
+```
+
+Load the neighbourhood object
+```{r}
+library(spdep)
+nb.states <- usa48.nb
+names(nb.states) <- attr(nb.states, "region.id")
+
+# Ensure that the state abbreviations match
+if (!all(attr(nb.states, "region.id") %in% context.usa48.data$state_abb)) {
+  stop("State abbreviations in neighborhood structure do not match those in the data.")
+}
+```
+
+
+```{r}
+context.usa48.data$state_abb <- as.factor(context.usa48.data$state_abb)
+```
+
+
+Spatial weights for the markov random field based smoother
+```{r}
+library(spdep)
+data(state)
+
+states_nb <- usa48.nb
+states_sf <- get_urbn_map(map = "states", sf = TRUE)
+
+states_reord <- states_sf %>%
+  subset(!state_abbv %in% c("DC","AK","HI")) |>
+  slice(match(state.abb, state_abbv))
+
+subset(states_reord, !state_abbv %in% c("DC","AK","HI")) |> 
+  st_geometry() |> 
+  st_centroid(of_largest_polygon = TRUE) -> coords 
+
+png(filename = "plots/adjacency.png",
+    width = 800, height = 600, units = "px"
+    )
+
+states_reord |> 
+    st_geometry() |> 
+    plot(border = "grey", lwd = 0.5)
+
+usa48.nb |>
+  plot(coords = coords, add = TRUE, 
+               points = FALSE, lwd = 0.5) 
+
+dev.off()
+```
+
+### Actual fit
+```{r}
+library(compositions)
+
+race_ilr <- with(context.usa48.data,
+                 ilr(acomp(cbind(white_pct,black_pct,hispanic_pct))))
+age_ilr <- with(context.usa48.data,
+                 ilr(acomp(cbind(age29andunder_pct,age30to64,age65andolder_pct))))
+edu_ilr <- with(context.usa48.data,
+                ilr(acomp(cbind(lesshs_pct,onlyhs_pct,morecollege_pct))))
+```
+
+```{r}
+library(mgcv)
+
+mrf.gam.fit <- gam(
+  cbind(I(ceiling(w.total_votes*w.gop_pct/(w.gop_pct+w.dem_pct))),
+        I(floor(w.total_votes*w.dem_pct/(w.gop_pct+w.dem_pct)))) ~ 
+    s(state_abb, bs = "mrf", xt = list(nb = nb.states)) +
+    s(race_ilr[,1],race_ilr[,2], bs="tp") + 
+    #ilr(acomp(cbind(white_pct,black_pct,hispanic_pct))) +
+    s(age_ilr[,1],age_ilr[,2], bs="tp") + 
+    #ilr(acomp(cbind(age29andunder_pct,age30to64,age65andolder_pct))) +
+    s(edu_ilr[,1],edu_ilr[,2], bs="tp") +
+    #ilr(acomp(cbind(lesshs_pct,onlyhs_pct,morecollege_pct))) +
+    s(median_hh_inc, bs="cr") +
+    s(clf_unemploy_pct, bs="cr"), 
+  data = context.usa48.data,
+  #weights = county.w/mean(county.w),
+  family = binomial)
+
+
+mrf.gam.fit <- gam(
+  I(w.gop_pct/(w.gop_pct+w.dem_pct)) ~ 
+    s(state_abb, bs = "mrf", xt = list(nb = nb.states)) +
+    s(race_ilr[,1],race_ilr[,2], bs="tp") + 
+    #ilr(acomp(cbind(white_pct,black_pct,hispanic_pct))) +
+    s(age_ilr[,1],age_ilr[,2], bs="tp") + 
+    #ilr(acomp(cbind(age29andunder_pct,age30to64,age65andolder_pct))) +
+    s(edu_ilr[,1],edu_ilr[,2], bs="tp") +
+    #ilr(acomp(cbind(lesshs_pct,onlyhs_pct,morecollege_pct))) +
+    s(median_hh_inc, bs="cr") +
+    s(clf_unemploy_pct, bs="cr"), 
+  data = context.usa48.data,
+  weights = county.w/mean(county.w),
+  family = betar)
+```
+
+### Interpretations
+#### State effect
+```{r}
+ssre <- predict(mrf.gam.fit, type = "terms", 
+                se = FALSE)[, "s(state_abb)"]
+all(sapply(tapply(ssre, list(context.usa48.data$state_abb), c),
+           function(x) length(unique(round(x, 8))) == 1))
+
+GAM_ss <- aggregate(ssre, list(context.usa48.data$state_abb), 
+                    head, n=1)$x
+```
+
+```{r}
+context.usa48.data$state_effect <- ssre
+
+plot_data <- left_join(context.usa48.data, counties, by = "county_fips") 
+
+print(
+    plot_data %>%
+      ggplot(aes(long, lat, group = group, fill = state_effect)) +
+      geom_polygon(color = NA) +
+      coord_map(projection = "mercator") +
+      labs(fill = "State Effect") +
+      scale_fill_gradient2(low = "blue", high = "red")
+)
+
+#ggsave(filename = "plots/state_effect.png")
+```
+#### Other variable effects
+```{r}
+summary(mrf.gam.fit)
+
+gam.plt <- plot(mrf.gam.fit, scheme=2, n2=400)
+```
+
+```{r}
+png(filename = "plots/med_inc_effect.png",
+     width = 800, height = 600, units = "px")
+plot.gam(mrf.gam.fit, select = 5, 
+         xlab = "Median Income",
+         ylab = "Smoothed effect")
+dev.off()
+
+png(filename = "plots/unempl_rate_effect.png",
+     width = 800, height = 600, units = "px")
+plot.gam(mrf.gam.fit, select = 6, 
+         xlab = "Unempolyment rate",
+         ylab = "Smoothed effect")
+dev.off()
+```
+
+
+##### Ethnical composition
+In the ternplot:
+```{r}
+smooth.index <- 2
+
+# reference composition
+ethnic_composit <- acomp(context.usa48.data, 
+                         parts=c("white_pct", "black_pct", "hispanic_pct"))
+
+ggplot(data=expand.grid(gam.plt[[smooth.index]]$x,gam.plt[[smooth.index]]$y), 
+       aes(x = Var1, y = Var2, color = gam.plt[[smooth.index]]$fit)) + geom_point(size = 3) +
+  scale_color_gradient2(low = "blue", mid="white",high = "red")
+
+ggplot(data=expand.grid(gam.plt[[smooth.index]]$x,gam.plt[[smooth.index]]$y), 
+       aes(x = Var1, y = Var2, color = gam.plt[[smooth.index]]$se)) + geom_point(size = 3) +
+  scale_color_gradient2(low="white",high = "red")
+```
+
+
+```{r}
+ggtern(data = as.data.frame(ilrInv(expand.grid(gam.plt[[smooth.index]]$x,gam.plt[[smooth.index]]$y), orig = ethnic_composit)), 
+       aes(white_pct, black_pct, hispanic_pct)) +
+  geom_point(size=1, aes(color=gam.plt[[smooth.index]]$fit)) +
+  scale_color_gradient2(low = "blue", mid="white",high = "red") +
+  labs(
+    T = "Black",
+    L = "White",
+    R = "Hispanic",
+    color = "Effect"
+  )
+#ggsave(filename = "plots/ethn_effect.png")
+
+ggtern(data = as.data.frame(ilrInv(expand.grid(gam.plt[[smooth.index]]$x,gam.plt[[smooth.index]]$y), orig = ethnic_composit)), 
+       aes(white_pct, black_pct, hispanic_pct)) +
+  geom_point(size=1, aes(color=gam.plt[[smooth.index]]$se)) +
+  scale_color_gradient2(low="white",high = "red") +
+  labs(
+    T = "Black",
+    L = "White",
+    R = "Hispanic",
+    color = "Standard error"
+  ) 
+#ggsave(filename = "plots/ethn_effect_se.png")
+```
+
+######Tentative almost-hard-coded version:
+- computing the predictions over a grid
+```{r}
+# building a grid for the predictors
+white.grid <- seq(min(ethnic_composit[,1]),max(ethnic_composit[,1]),length.out=200)
+black.grid <- seq(min(ethnic_composit[,2]),max(ethnic_composit[,2]),length.out=200)
+
+predictors.grid <- expand.grid(white_pct=white.grid, black_pct=black.grid) 
+predictors.grid$hispanic_pct <- 1 - predictors.grid$white_pct - predictors.grid$black_pct
+
+predictors.grid <- subset(predictors.grid, hispanic_pct >= 0)
+
+# map the grid to the space of compositions
+transformed.grid <- as.data.frame(ilr(acomp(predictors.grid,
+                                            parts=c("white_pct", "black_pct", "hispanic_pct"))))
+names(transformed.grid) <- mrf.gam.fit[["smooth"]][[smooth.index]][["term"]]
+
+# compute the prediction matrix(matrix of basis functions evaluated at the prediction points)
+pred.matrix <- PredictMat(mrf.gam.fit$smooth[[smooth.index]], data=transformed.grid)
+
+# compute the predictions by multiplying the vector of basis coefficients to the prediction matrix
+first_param <- mrf.gam.fit$smooth[[smooth.index]]$first.para
+last_param <- mrf.gam.fit$smooth[[smooth.index]]$last.para
+
+smooth.coef <- 
+  coef(mrf.gam.fit)[first_param:last_param]
+
+predictions <- pred.matrix %*% smooth.coef
+```
+
+- computing the variance of the prediction
+```{r}
+first_param <- mrf.gam.fit$smooth[[smooth.index]]$first.para
+last_param <- mrf.gam.fit$smooth[[smooth.index]]$last.para
+
+cov.matrix <- 
+  pred.matrix %*% mrf.gam.fit$Vp[first_param:last_param,first_param:last_param] %*% t(pred.matrix)
+```
+
+- plotting the results
+```{r}
+# Point-wise estimate
+ggtern(data = predictors.grid, aes(white_pct, black_pct, hispanic_pct)) +
+  geom_point(size=0.2, aes(color=predictions)) +
+  #geom_interpolate_tern(aes(value=predictions, color=..level..)) +  
+  scale_color_gradient2(low = "blue", mid="white",high = "red") 
+  
+# Standard error
+ggtern(data = predictors.grid, aes(white_pct, black_pct, hispanic_pct)) +
+  geom_point(size=1, aes(color=sqrt(diag(cov.matrix)))) +
+  #geom_interpolate_tern(aes(value=sqrt(diag(cov.matrix)), color=..level..)) +  
+  scale_color_gradient2(low = "white",high = "red") +
+  geom_point(data = ethnic_composit, aes(white_pct, black_pct, hispanic_pct),
+             size = 0.0001)
+
+# In the space of compositions
+names(transformed.grid) <- c("d1","d2")
+
+ggplot(data=transformed.grid, aes(x=d1,y=d2,colour = predictions)) + 
+  geom_point(size = 3) +
+  scale_color_gradient2(low = "blue", mid="white",high = "red")
+```
+
+###### Linear comparison
+```{r}
+ethnic_composit_reduced.fit <- gam(
+  I(w.gop_pct/(w.gop_pct+w.dem_pct)) ~ 
+    median_hh_inc +
+    clf_unemploy_pct +
+    s(state_abb, bs = "mrf", xt = list(nb = nb.states)) +
+    # replacing the smoother by a linear term
+    ilr(acomp(cbind(white_pct,black_pct,hispanic_pct))) +
+    s(age_ilr[,1],age_ilr[,2], bs="tp") + 
+    s(edu_ilr[,1],edu_ilr[,2], bs="tp"),
+  data = context.usa48.data,
+  weights = county.w/mean(county.w),
+  family = betar)
+```
+
+Comparison through anova test
+```{r}
+anova(ethnic_composit_reduced.fit, mrf.gam.fit, test = "Chisq")
+```
+
+
+##### Educational composition
+
+In the ternplot
+```{r}
+smooth.index <- 4
+
+edu_composit <- acomp(context.usa48.data, 
+                      parts = c("lesshs_pct","onlyhs_pct","morecollege_pct"))
+
+ggtern(data = as.data.frame(ilrInv(expand.grid(gam.plt[[smooth.index]]$x,gam.plt[[smooth.index]]$y),
+                                   orig = edu_composit)), 
+       aes(lesshs_pct, onlyhs_pct, morecollege_pct)) +
+  geom_point(size=1, aes(color=gam.plt[[smooth.index]]$fit)) +
+  #geom_interpolate_tern(aes(value=gam.plt[[smooth.index]]$fit, color=..level..)) + 
+  scale_color_gradient2(low = "blue", mid="white",high = "red") +
+  labs(
+    T = "hs",
+    L = "lees_hs",
+    R = "more_hs",
+    color = "Effect"
+  )
+ggsave(filename = "plots/edu_effect.png")
+
+ggtern(data = as.data.frame(ilrInv(expand.grid(gam.plt[[smooth.index]]$x,gam.plt[[smooth.index]]$y),
+                                   orig = edu_composit)), 
+       aes(lesshs_pct, onlyhs_pct, morecollege_pct)) +
+  geom_point(size=1, aes(color=gam.plt[[smooth.index]]$se)) +
+  scale_color_gradient2(low="white",high = "red") +
+  labs(
+    T = "hs",
+    L = "lees_hs",
+    R = "more_hs",
+    color = "Standard error"
+  )
+ggsave(filename = "plots/edu_effect_se.png")
+```
+###### Linear comparison
+```{r}
+edu_composit_reduced.fit <- gam(
+  I(w.gop_pct/(w.gop_pct+w.dem_pct)) ~ 
+    median_hh_inc +
+    clf_unemploy_pct +
+    s(state_abb, bs = "mrf", xt = list(nb = nb.states)) +
+    s(race_ilr[,1],race_ilr[,2], bs="tp") + 
+    s(age_ilr[,1],age_ilr[,2], bs="tp") + 
+    # replacing the smoother by a linear term
+    ilr(acomp(cbind(lesshs_pct,onlyhs_pct,morecollege_pct))), 
+  data = context.usa48.data,
+  weights = county.w/mean(county.w),
+  family = betar)
+```
+
+
+```{r}
+anova(edu_composit_reduced.fit, mrf.gam.fit, test = "Chisq")
+```
+
+###### Linear effect interpretation
+```{r}
+edu_coef.ind <- 4:5
+edu_coef <- ilrInv(coef(edu_composit_reduced.fit)[edu_coef.ind], orig=edu_composit)
+
+edu_coef.var <- ilrvar2clr(vcov(edu_composit_reduced.fit)[edu_coef.ind,edu_coef.ind])
+
+par(mar=c(3,3,0,1))
+
+scaleB = 1
+plot(scaleB*edu_coef)
+plot(0*edu_coef,add=TRUE, pch=20)
+alpha = 0.05
+rF = sqrt(qf(1-alpha,nrow(edu_coef.var)-1, edu_composit_reduced.fit$df.residual)) 
+ellipses(scaleB*edu_coef,scaleB^2*edu_coef.var, rF)
+```
+
+```{r}
+plot(edu_composit, col=ifelse(context.usa48.data$gop_pct20 > context.usa48.data$dem_pct20, "red","blue"))
+straight(mean(edu_composit), edu_coef, lwd=2)
+```
+
+```{r}
+# building a grid for the predictors
+less_hs.grid <- seq(min(edu_composit[,1]),max(edu_composit[,1]),length.out=200)
+only_hs.grid <- seq(min(edu_composit[,2]),max(edu_composit[,2]),length.out=200)
+
+predictors.grid <- expand.grid(lesshs_pct=less_hs.grid, onlyhs_pct=only_hs.grid) 
+predictors.grid$morecollege_pct <- 1 - predictors.grid$lesshs_pct - predictors.grid$onlyhs_pct
+
+predictors.grid <- subset(predictors.grid, morecollege_pct >= 0)
+
+# map the grid to the space of compositions
+transformed.grid <- as.data.frame(ilr(acomp(predictors.grid,
+                                            parts = c("lesshs_pct","onlyhs_pct","morecollege_pct"))))
+names(transformed.grid) <- names(coef(edu_composit_reduced.fit)[edu_coef.ind])
+
+# compute the predictions
+predictions.linear <- as.matrix(transformed.grid) %*% coef(edu_composit_reduced.fit)[edu_coef.ind]
+```
+
+
+```{r}
+# Point-wise estimate
+ggtern(data = predictors.grid, aes(lesshs_pct, onlyhs_pct, morecollege_pct)) +
+  geom_point(size=0.2, aes(color=predictions.linear)) +
+  scale_color_gradient2(low = "blue", mid="white",high = "red") +
+  geom_point(data = edu_composit, aes(lesshs_pct, onlyhs_pct, morecollege_pct),
+             size = 0.01)
+
+# In the space of compositions
+names(transformed.grid) <- c("d1","d2")
+
+ggplot(data = transformed.grid, aes(d1, d2)) +
+  geom_point(size=0.2, aes(color=predictions.linear)) +
+  scale_color_gradient2(low = "blue", mid="white",high = "red") 
+```
+
+##### Age composition
+In the ternplot
+```{r}
+smooth.index <- 3
+
+age_composit <- acomp(context.usa48.data, 
+                  parts = c("age29andunder_pct", "age30to64", "age65andolder_pct")
+                  )
+
+ggtern(data = as.data.frame(ilrInv(expand.grid(gam.plt[[smooth.index]]$x,gam.plt[[smooth.index]]$y),
+                                   orig = age_composit)), 
+       aes(age29andunder_pct, age30to64, age65andolder_pct)) +
+  geom_point(size=1, aes(color=gam.plt[[smooth.index]]$fit)) +
+  scale_color_gradient2(low = "blue", mid="white",high = "red") +
+  labs(
+    T = "30to64",
+    L = "under30",
+    R = "over64",
+    color = "Effect"
+  )
+ggsave(filename = "plots/age_effect.png")
+
+ggtern(data = as.data.frame(ilrInv(expand.grid(gam.plt[[smooth.index]]$x,gam.plt[[smooth.index]]$y),
+                                   orig = age_composit)), 
+       aes(age29andunder_pct, age30to64, age65andolder_pct)) +
+  geom_point(size=1, aes(color=gam.plt[[smooth.index]]$se)) +
+  scale_color_gradient2(low="white",high = "red") + 
+  labs(
+    T = "30to64",
+    L = "under30",
+    R = "over64",
+    color = "Standard error"
+  )
+ggsave(filename = "plots/age_effect_se.png")
+```
+###### Linear comparison
+```{r}
+age_composit_reduced.fit <- gam(
+  cbind(I(ceiling(w.total_votes*w.gop_pct/(w.gop_pct+w.dem_pct))),
+        I(floor(w.total_votes*w.dem_pct/(w.gop_pct+w.dem_pct)))) ~ 
+    s(state_abb, bs = "mrf", xt = list(nb = nb.states)) +
+    s(race_ilr[,1],race_ilr[,2], bs="tp") + 
+    # replacing the smoother by a linear term
+    ilr(acomp(cbind(age29andunder_pct,age30to64,age65andolder_pct))) +
+    s(edu_ilr[,1],edu_ilr[,2], bs="tp") +
+    s(median_hh_inc, bs="cr") +
+    s(clf_unemploy_pct, bs="cr"), 
+  data = context.usa48.data,
+  family = binomial)
+```
+
+
+```{r}
+anova(age_composit_reduced.fit, mrf.gam.fit, test = "Chisq")
+```
+###### Linear effect interpretation
+```{r}
+age_coef.ind <- 2:3
+age_coef <- ilrInv(coef(age_composit_reduced.fit)[age_coef.ind], orig=age_composit)
+
+age_coef.var <- ilrvar2clr(vcov(age_composit_reduced.fit)[age_coef.ind,age_coef.ind])
+
+par(mar=c(3,3,0,1))
+
+scaleB = 1
+plot(scaleB*age_coef)
+plot(0*age_coef,add=TRUE, pch=20)
+alpha = 0.05
+rF = sqrt(qf(1-alpha,nrow(age_coef.var)-1, age_composit_reduced.fit$df.residual)) 
+ellipses(scaleB*age_coef,scaleB^2*age_coef.var, rF)
+```
+
+```{r}
+plot(age_composit, col=ifelse(context.usa48.data$gop_pct20 > context.usa48.data$dem_pct20, "red","blue"))
+straight(mean(age_composit), age_coef, lwd=2)
+```
+
+## Prediction
+```{r}
+county.preds <- subset(context.usa48.data, select = c("county_name","county_fips","state_abb","w.total_votes","big_electors"))
+
+tmp.preds <- predict(mrf.gam.fit, se.fit = T, type = "link")
+
+
+county.preds$gop_preds <- mrf.gam.fit$family$linkinv(tmp.preds$fit)
+
+county.preds$gop_preds.hi <- mrf.gam.fit$family$linkinv(tmp.preds$fit + 2*tmp.preds$se.fit)
+county.preds$gop_preds.lo <- mrf.gam.fit$family$linkinv(tmp.preds$fit - 2*tmp.preds$se.fit)
+
+rm(tmp.preds)
+```
+
+Combine predictions to get state-level predictions
+```{r}
+#pointwise prediction
+state.preds <- county.preds %>%
+  group_by(state_abb) %>%
+  summarize(state.gop_pct.pred = t(gop_preds)%*%w.total_votes/sum(w.total_votes))
+
+#upper bounds
+county.preds %>%
+  group_by(state_abb) %>%
+  summarize(state.gop_pct.hi = t(gop_preds.hi)%*%w.total_votes/sum(w.total_votes)) %>%
+  dplyr::select(state.gop_pct.hi) %>% unlist() -> state.preds$state.gop_pct.hi
+
+#lower bounds
+county.preds %>%
+  group_by(state_abb) %>%
+  summarize(state.gop_pct.lo = t(gop_preds.lo)%*%w.total_votes/sum(w.total_votes)) %>%
+  dplyr::select(state.gop_pct.lo) %>% unlist() -> state.preds$state.gop_pct.lo
+
+#true results
+context.usa48.data %>%
+  group_by(state_abb) %>%
+  summarize(state.gop_pct.true = t(w.gop_pct/(w.gop_pct+w.dem_pct))%*%w.total_votes/sum(w.total_votes)) %>%
+  dplyr::select(state.gop_pct.true) %>% unlist() -> state.preds$state.gop_pct.true
+  
+plot(state.preds$state.gop_pct.true, state.preds$state.gop_pct.pred)
+
+state.preds <- arrange(state.preds, state.gop_pct.pred)
+state.preds$state_abb <- factor(state.preds$state_abb, levels = state.preds$state_abb)
+
+# Plot data with confidence intervals
+ggplot(state.preds, aes(x = state_abb, y = state.gop_pct.pred)) +
+  geom_point() +
+  geom_errorbar(data = state.preds, 
+                aes(x = state_abb, ymin = state.gop_pct.lo, ymax = state.gop_pct.hi)) +
+  labs(x = "State", y = "%GOP") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  geom_point(data = state.preds, aes(x = state_abb, y = state.gop_pct.true),
+             color="red") +
+  labs(col = NULL) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "blue")
+
+ggsave(filename = "plots/state_level_CI.png")
+```
+
+Detected states with dubious predictions
+```{r}
+state.preds <- state.preds %>%
+  mutate(state.classification = 
+           ifelse(state.gop_pct.hi < 0.5, "Blue state", 
+                  ifelse(state.gop_pct.lo > 0.5, "Red state", "Potential swing state")) 
+  )
+
+states$state_abbv <- as.factor(states$state_abbv)
+
+plot_data <- left_join(state.preds, states, 
+                       by=c("state_abb"="state_abbv"))
+
+print(
+    plot_data %>%
+      ggplot(aes(long, lat, group = group, fill = state.classification)) +
+      geom_polygon(color = NA) +
+      coord_map(projection = "mercator") +
+      labs(fill = "State classification") +
+      scale_fill_manual(values = c("Red state" = "red", 
+                                   "Blue state" = "blue",
+                                   "Potential swing state" = "seagreen1"))
+)
+
+ggsave(filename = "plots/swing_states_map.png")
+
+print(subset(state.preds, state.classification == "Potential swing state")$state_abb)
+```
+
+
+

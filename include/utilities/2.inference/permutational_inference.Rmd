@@ -1,0 +1,583 @@
+---
+title: "Permutational Inference: examples"
+---
+
+```{r}
+past_exams_fold = "../../past-exams"
+source("inference_module.R")
+```
+
+Dependencies
+```{r}
+library(parallel)
+```
+
+
+## Multivariate t-test
+### 2022-02
+```{r}
+milk_1 <- readRDS(paste(past_exams_fold,"2022-02-11/milk_samples_1.Rds",sep="/"))
+str(milk_1)
+```
+
+Test statistic
+```{r}
+library(DepthProc)
+
+test_stat <- function(data1, data2){
+  med1 <- DepthProc::depthMedian(data1, depth_params = list(method='Tukey'))
+  med2 <- DepthProc::depthMedian(data2, depth_params = list(method='Tukey'))
+  
+  return(max(abs(med1-med2)))
+}
+```
+
+Applying the parallel implementation
+```{r}
+source("inference_module.R")
+
+seed <- 2022
+B <- 1e3
+
+library(parallel)
+
+n_cores <- 8 #detectCores()
+cl <- makeCluster(n_cores)
+
+milk_traits <- scale(milk_1[, 1:3])
+
+test <- perm_t.test(subset(milk_traits[,1:3], milk_1$pasteurization_type=="Pasteurized"), 
+                    subset(milk_traits[,1:3], milk_1$pasteurization_type=="Ultra-Pasteurized"),
+                    test_stat, 
+                    B, seed,
+                    cl)
+```
+
+Plotting the results
+```{r}
+source("inference_module.R")
+
+plot.perm_results(test)
+```
+
+## Center of symmetry
+To perform this test we have to assume a symmetric distribution and use symmetric reflections as a permutation scheme
+
+### 2022-01
+```{r}
+milk_1 <- readRDS(paste(past_exams_fold,"2022-01-21/milk_samples_1.Rds",sep="/"))
+str(milk_1)
+```
+Test statistic
+```{r}
+library(DepthProc)
+
+eucl_dist <- function(X,mu0){
+  x.mean <- colMeans(X)
+  return(norm(x.mean-mu0,type="2")^2)
+}
+```
+
+Testing 
+```{r}
+golden_milk_std <- c(kappa_casein=6,Casein_micelle_size=174,Native_pH=7)
+
+seed <- 2022
+B <- 1e3
+
+n_cores <- 1 #detectCores()
+cl <- makeCluster(n_cores)
+
+ctr_sym.test_res <- perm_ctr_sym.test(milk_1, golden_milk_std, 
+                  eucl_dist, 
+                  B, seed,
+                  cl)
+
+plot.perm_results(ctr_sym.test_res)
+```
+
+## Paired multivariate data
+Two ways:
+- make inference on the distribution of the difference using a center of symmetry test
+$$
+H_0: \mathbb{E}[X_M - X_H] = \mathbf{0} \text{ vs } H_1: \mathbb{E}[X_M - X_H] \neq \mathbf{0}
+$$
+- we treat them "separately", finding likelihood-invariant transformations under $H_0$ that respect the paired nature of the test. We test:
+$$
+H_0: X_M \stackrel{d}{=} X_B \; vs. \;H_1: X_M \stackrel{d}{\neq} X_B
+$$
+And we have $2^N$ different permutations, since the **exchangeability is only within the pairs**.
+
+```{r}
+t1 <- read.table('meteo_data/barcellona.txt', header=T)
+t2 <- read.table('meteo_data/milano.txt', header=T)
+```
+
+We choose as test statistic the norm of the differences of the means of both samples.
+```{r}
+T20 <- norm(as.matrix(colMeans(t1) - apply(t2, MARGIN=2, FUN=mean)))
+```
+
+```{r}
+seed <- 2022
+B <- 1e3
+
+T2 <- numeric(B)
+
+p <- dim(t1)[2] # here naturally I can use t1 or t2.
+n <- dim(t2)[1]
+t.full <- rbind(t1, t2)
+set.seed(seed)
+for(perm in 1:B)
+  {
+  # Random permutation
+  # N.B. exchangeability is only within pairs
+  perm.indices.t1 <- seq(1, n) + n * rbinom(n,1, 0.5)
+  t1.perm <- t.full[perm.indices.t1, ]
+  t2.perm <- t.full[-perm.indices.t1,]
+  
+  T2[perm] <- norm(as.matrix(((colMeans(t1.perm)) - colMeans(t2.perm))))
+}
+
+hist(T2,xlim=range(c(T2,T20)))
+abline(v=T20,col=3,lwd=4)
+
+plot(ecdf(T2))
+abline(v=T20,col=3,lwd=4)
+
+# p-value
+p_val <- sum(T2>=T20)/B
+p_val
+```
+
+
+Using my implementation
+```{r}
+t_stat <- function(data1, data2){
+  norm(as.matrix(colMeans(data1) - apply(data2, MARGIN=2, FUN=mean)))
+}
+```
+
+```{r}
+source("inference_module.R")
+
+seed <- 2022
+B <- 1e3
+
+library(parallel)
+
+n_cores <- 8 #detectCores()
+cl <- makeCluster(n_cores)
+
+test <- perm_paired_t.test(t1, t2,
+                           t_stat, 
+                           B, seed,
+                           cl)
+
+plot.perm_results(test)
+```
+
+## Univariate ANOVA
+```{r}
+summary(chickwts)
+
+g <- nlevels(chickwts$feed)
+n <- dim(chickwts)[1]
+
+with(chickwts, plot(feed, weight, xlab='treat',col=rainbow(g),main='Original Data'))
+```
+ANOVA test:
+$$
+H_0: \tau_i=0\;\forall i\;vs\;H_1:\exists\,\tau_i\neq0 
+$$
+being $\tau_i, i\in \{1,\ldots6\}$ the generic effect of a given level of the treatment.
+
+```{r}
+fit <- aov(weight ~ feed, data = chickwts)
+fit_summary <- summary(fit)
+
+fit_summary
+```
+Let's extract the test statistic
+```{r}
+T0 <- fit_summary[[1]]["F value"][1,1]
+T0
+```
+
+
+### Target permutation
+Permutational test
+```{r}
+B <- 1e3
+
+T_stat <- numeric(B) 
+
+for(perm in 1:B){
+  # Permutation:
+  permutation <- sample(1:n)
+  weight_perm <- chickwts$weight[permutation]
+  fit_perm <- aov(weight_perm ~ feed, data=chickwts)
+  
+  # Test statistic:
+  T_stat[perm] <- summary(fit_perm)[[1]][1,4]
+}
+
+hist(T_stat,xlim=range(c(T_stat,T0)),breaks=30)
+abline(v=T0,col=3,lwd=2)
+```
+```{r}
+# p-value
+p_val <- sum(T_stat>=T0)/B
+p_val
+```
+
+### More general version
+In the same way we could have achieve this by permuting the residuals of the model under H0, i.e. the residual w.r.t. the sample mean
+```{r}
+B <- 1e3
+
+T_stat <- numeric(B) 
+
+fit.H0 <- aov(weight ~ 1, data = chickwts)
+
+for(perm in 1:B){
+  # Permutation:
+  weight_perm <- fitted(fit.H0) + sample(residuals(fit.H0))
+  
+  # Fitting on the permuted target
+  fit_perm <- aov(weight_perm ~ feed, data=chickwts)
+  
+  # Test statistic:
+  T_stat[perm] <- summary(fit_perm)[[1]][1,4]
+}
+
+hist(T_stat,xlim=range(c(T_stat,T0)),breaks=30)
+abline(v=T0,col=3,lwd=2)
+```
+### Implemented in the module
+```{r}
+fit.H0 <- aov(weight ~ 1, data = chickwts)
+fit.H1 <- aov(weight ~ feed, data = chickwts)
+
+
+test_stat <- function(fit.H0,fit.H1){
+  anova(fit.H0,fit.H1)$F[2]
+}
+```
+
+```{r}
+source("inference_module.R")
+
+B <- 1e3
+seed <- 2022
+
+n_cores <- 1
+cl <- makeCluster(n_cores)
+
+test <- perm_anova.test(fit.H0, fit.H1, 
+                        chickwts,
+                        test_stat,
+                        B, seed,
+                        cl)
+
+plot.perm_results(test)
+```
+
+
+## Two-way ANOVA
+```{r}
+km          <- c(18.7, 16.8, 20.1, 22.4, 14.0, 15.2, 22.0, 23.3)
+station     <- factor(c('Esso','Esso','Esso','Esso','Shell','Shell','Shell','Shell'))
+fuel        <- factor(c('95','95','98','98','95','95','98','98'))
+station_fuel<- factor(c('Esso95','Esso95','Esso98','Esso98','Shell95','Shell95','Shell98','Shell98'))
+
+km_data <- data.frame(
+  km = km,
+  station = station,
+  fuel = fuel,
+  station_fuel = station_fuel
+)
+
+
+n <- 8
+
+M             <- mean(km)
+Mstation      <- tapply(km,      station, mean)
+Mfuel         <- tapply(km,       fuel, mean)
+Mstation_fuel <- tapply(km, station_fuel, mean)
+
+plot(station_fuel, km, col=rainbow(5)[2:5], ylim=c(0,24))
+```
+### Parametric tests
+```{r}
+summary(aov(km ~ station + fuel + station:fuel))
+```
+### Non parametric version
+
+Interaction term
+```{r}
+fit.H0 <- aov(km ~ station + fuel, data = km_data)
+fit.H1 <- aov(km ~ station + fuel + station:fuel, data = km_data)
+
+
+test_stat <- function(fit.H0,fit.H1){
+  anova(fit.H0,fit.H1)$F[2]
+}
+```
+
+```{r}
+source("inference_module.R")
+
+B <- 1e3
+seed <- 2022
+
+n_cores <- 1
+cl <- makeCluster(n_cores)
+
+test <- perm_anova.test(fit.H0, fit.H1, 
+                        km_data,
+                        test_stat,
+                        B, seed,
+                        cl)
+
+plot.perm_results(test)
+```
+(difference between summary.aov and anova)
+
+Station term
+```{r}
+fit.H0 <- aov(km ~ fuel, data = km_data)
+fit.H1 <- aov(km ~ station + fuel, data = km_data)
+
+test_stat <- function(fit.H0,fit.H1){
+  anova(fit.H0,fit.H1)$F[2]
+}
+```
+
+```{r}
+source("inference_module.R")
+
+B <- 1e3
+seed <- 2022
+
+n_cores <- 1
+cl <- makeCluster(n_cores)
+
+test <- perm_anova.test(fit.H0, fit.H1, 
+                        km_data,
+                        test_stat,
+                        B, seed,
+                        cl)
+
+plot.perm_results(test)
+```
+
+Fuel term
+```{r}
+fit.H0 <- aov(km ~ station, data = km_data)
+fit.H1 <- aov(km ~ station + fuel, data = km_data)
+
+
+test_stat <- function(fit.H0,fit.H1){
+  #anova(fit.H0,fit.H1)$F[2]
+  summary.aov(fit.H1)[[1]][2,4]
+}
+```
+
+```{r}
+source("inference_module.R")
+
+B <- 1e3
+seed <- 2022
+
+n_cores <- 1
+cl <- makeCluster(n_cores)
+
+test <- perm_anova.test(fit.H0, fit.H1, 
+                        km_data,
+                        test_stat,
+                        B, seed,
+                        cl)
+
+plot.perm_results(test)
+```
+
+## ANOVA test for regression
+
+### Simple linear regression
+Data
+```{r}
+set.seed(1992)
+n <- 30
+B <- 1e3
+
+# covariate values
+x1 <- runif(n,0,10)
+x2 <- (1:n)/5
+x3 <- rnorm(n,5,5)
+
+
+# generating model
+b0 <- 2
+b1 <- 3
+b2 <- -2
+b3 <- 0
+Y <- b0 + b1*x1 + b2*x2 + b3*x3 + stabledist::rstable(n,1.2,0)
+
+plot(x1,Y,pch=16)
+plot(x2,Y,pch=16)
+plot(x3,Y,pch=16)
+```
+
+Parametric inference
+```{r}
+# parametric inference
+result <- lm(Y ~ x1 + x2 + x3)
+summary(result)
+```
+
+Non-parametric testing the significance of the coefficients using as test statistic the absolute val of the parameter scaled by its std dev
+
+
+for x1
+```{r}
+data <- as.data.frame(cbind(Y,x1,x2,x3))
+
+fit.H0 <- lm(Y ~ x2 + x3, data = data)
+fit.H1 <- lm(Y ~ x1 + x2 + x3, data = data)
+
+test_stat <- function(fit.H0,fit.H1){
+  abs(summary(fit.H1)$coefficients[2,1])
+}
+
+source("inference_module.R")
+
+B <- 1e3
+seed <- 2022
+
+n_cores <- 1
+cl <- makeCluster(n_cores)
+
+test <- perm_anova.test(fit.H0, fit.H1, 
+                        data,
+                        test_stat,
+                        B, seed,
+                        cl)
+
+plot.perm_results(test)
+```
+
+for x2
+```{r}
+fit.H0 <- lm(Y ~ x1 + x3, data = data)
+fit.H1 <- lm(Y ~ x1 + x2 + x3, data = data)
+
+test_stat <- function(fit.H0,fit.H1){
+  abs(summary(fit.H1)$coefficients[3,1])
+}
+
+source("inference_module.R")
+
+B <- 1e3
+seed <- 2022
+
+n_cores <- 1
+cl <- makeCluster(n_cores)
+
+test <- perm_anova.test(fit.H0, fit.H1, 
+                        data,
+                        test_stat,
+                        B, seed,
+                        cl)
+
+plot.perm_results(test)
+```
+
+for x3
+```{r}
+fit.H0 <- lm(Y ~ x1 + x2, data = data)
+fit.H1 <- lm(Y ~ x1 + x2 + x3, data = data)
+
+test_stat <- function(fit.H0,fit.H1){
+  abs(summary(fit.H1)$coefficients[4,1])
+}
+
+source("inference_module.R")
+
+B <- 1e3
+seed <- 2022
+
+n_cores <- 1
+cl <- makeCluster(n_cores)
+
+test <- perm_anova.test(fit.H0, fit.H1, 
+                        data,
+                        test_stat,
+                        B, seed,
+                        cl)
+
+plot.perm_results(test)
+```
+
+
+### Non-linear regression
+```{r}
+milk_2 <- readRDS(paste(past_exams_fold,"2022-02-11/milk_samples_2.Rds",sep="/"))
+
+str(milk_2)
+```
+
+Regression targeting kappa_casein of the milk
+
+Complete model (to be put in $H_1$)
+```{r}
+library(splines)
+
+mod2_fit <-
+  lm(kappa_casein ~ bs(wave_280, degree = 2, df = 3) + bs(wave_700, degree = 2, df =3),
+     data = milk_2)
+
+summary(mod2_fit)
+```
+
+Reduced model (no interaction, in $H_0$)
+```{r}
+reduced_mod2_fit <-
+  lm(kappa_casein ~ bs(wave_280, degree = 2, df = 3),
+     data = milk_2)
+
+summary(reduced_mod2_fit)
+```
+
+We want to test the significance of the interaction term
+```{r}
+test_stat <- function(fit.H0, fit.H1){
+  anova(fit.H0, fit.H1, test = "F")$F[2]
+}
+```
+
+```{r}
+source("inference_module.R")
+
+B <- 1e3
+seed <- 2022
+
+n_cores <- 1
+cl <- makeCluster(n_cores)
+
+test <- perm_anova.test(reduced_mod2_fit, mod2_fit, 
+                        milk_2,
+                        test_stat,
+                        B, seed,
+                        cl)
+
+plot.perm_results(test)
+```
+I think that in the solutions provided on webeep there's an error. Indeed, there even the fit under H0 is refitted on the permuted target. A thing that is not done during the labs
+
+## Permutational confidence interval
+```{r}
+
+```
+
+
